@@ -326,15 +326,6 @@ public class TileService : ITileService
                         // Check if any sub-tile has a different timestamp than the zoom tile
                         bool hasNewerThanZoom = subTilesExist.Any(st => st.Cache > zoomTile.Cache);
 
-                        // Check if sub-tiles have varying timestamps among themselves
-                        var uniqueTimestamps = subTilesExist.Select(st => st.Cache).Distinct().Count();
-                        bool hasVaryingSubTileTimestamps = uniqueTimestamps > 1;
-
-                        // Check if zoom tile is older than 1 minute (likely needs rebuilding)
-                        // This is aggressive but needed for one-time fix of broken tiles
-                        var tileAgeMinutes = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - zoomTile.Cache) / 1000.0 / 60.0;
-                        bool isOldTile = tileAgeMinutes > 1;
-
                         // Check if tile file is suspiciously small (likely empty/transparent)
                         // Real zoom tiles should be 2KB+, empty ones are <1KB
                         bool isEmptyTile = zoomTile.FileSizeBytes > 0 && zoomTile.FileSizeBytes < 1024;
@@ -344,22 +335,11 @@ public class TileService : ITileService
                             shouldRebuild = true;
                             rebuildReason = $"has newer sub-tiles ({subTileCount}/4)";
                         }
-                        else if (hasVaryingSubTileTimestamps)
-                        {
-                            shouldRebuild = true;
-                            rebuildReason = $"sub-tiles have varying timestamps ({subTileCount}/4)";
-                        }
                         else if (isEmptyTile && subTileCount >= 1)
                         {
                             // Rebuild empty tiles that have at least one sub-tile
                             shouldRebuild = true;
                             rebuildReason = $"empty tile fix ({subTileCount}/4, {zoomTile.FileSizeBytes}b)";
-                        }
-                        else if (isOldTile && subTileCount >= 1)
-                        {
-                            // Rebuild old tiles with at least one sub-tile (one-time fix for existing tiles)
-                            shouldRebuild = true;
-                            rebuildReason = $"old tile refresh ({subTileCount}/4)";
                         }
                     }
 
