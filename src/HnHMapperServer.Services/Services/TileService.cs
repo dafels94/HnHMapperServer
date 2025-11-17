@@ -1,10 +1,12 @@
 using HnHMapperServer.Core.Interfaces;
 using HnHMapperServer.Core.Models;
 using HnHMapperServer.Services.Interfaces;
+using HnHMapperServer.Infrastructure.Data;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using Microsoft.Extensions.Logging;
+using Microsoft.EntityFrameworkCore;
 
 namespace HnHMapperServer.Services.Services;
 
@@ -15,19 +17,22 @@ public class TileService : ITileService
     private readonly IUpdateNotificationService _updateNotificationService;
     private readonly IStorageQuotaService _quotaService;
     private readonly ILogger<TileService> _logger;
+    private readonly ApplicationDbContext _dbContext;
 
     public TileService(
         ITileRepository tileRepository,
         IGridRepository gridRepository,
         IUpdateNotificationService updateNotificationService,
         IStorageQuotaService quotaService,
-        ILogger<TileService> logger)
+        ILogger<TileService> logger,
+        ApplicationDbContext dbContext)
     {
         _tileRepository = tileRepository;
         _gridRepository = gridRepository;
         _updateNotificationService = updateNotificationService;
         _quotaService = quotaService;
         _logger = logger;
+        _dbContext = dbContext;
     }
 
     public async Task SaveTileAsync(int mapId, Coord coord, int zoom, string file, long timestamp, string tenantId, int fileSizeBytes)
@@ -159,22 +164,39 @@ public class TileService : ITileService
         _logger.LogInformation("Rebuild Zooms: Complete!");
     }
 
-    public async Task<int> RebuildIncompleteZoomTilesAsync(string gridStorage, int maxTilesToRebuild)
+    public async Task<int> RebuildIncompleteZoomTilesAsync(string tenantId, string gridStorage, int maxTilesToRebuild)
     {
         int rebuiltCount = 0;
 
         try
         {
-            // Get all tiles from the database
-            var allTiles = await _tileRepository.GetAllTilesAsync();
+            // Get all tiles from the database for this tenant
+            // Use IgnoreQueryFilters() to bypass tenant filter (background services have no HTTP context)
+            // Then manually filter by the provided tenantId
+            var tileEntities = await _dbContext.Tiles
+                .IgnoreQueryFilters()
+                .Where(t => t.TenantId == tenantId)
+                .ToListAsync();
 
-            _logger.LogInformation("Zoom rebuild scan: Found {TotalTiles} total tiles in database", allTiles.Count);
+            // Convert to domain models
+            var tenantTiles = tileEntities.Select(t => new TileData
+            {
+                MapId = t.MapId,
+                Coord = new Coord(t.CoordX, t.CoordY),
+                Zoom = t.Zoom,
+                File = t.File,
+                Cache = t.Cache,
+                TenantId = t.TenantId,
+                FileSizeBytes = t.FileSizeBytes
+            }).ToList();
+
+            _logger.LogInformation("Zoom rebuild scan for tenant {TenantId}: Found {TotalTiles} tiles", tenantId, tenantTiles.Count);
 
             // Process zoom levels 1-6 in order
             for (int zoom = 1; zoom <= 6 && rebuiltCount < maxTilesToRebuild; zoom++)
             {
                 // Get all tiles at this zoom level
-                var zoomTiles = allTiles.Where(t => t.Zoom == zoom).ToList();
+                var zoomTiles = tenantTiles.Where(t => t.Zoom == zoom).ToList();
 
                 int skippedMissingSubTiles = 0;
                 int skippedNoNewerSubTiles = 0;

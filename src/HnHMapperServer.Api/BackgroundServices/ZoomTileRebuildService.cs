@@ -48,12 +48,42 @@ public class ZoomTileRebuildService : BackgroundService
             {
                 using var scope = _scopeFactory.CreateScope();
                 var tileService = scope.ServiceProvider.GetRequiredService<ITileService>();
+                var tenantService = scope.ServiceProvider.GetRequiredService<ITenantService>();
 
-                var rebuiltCount = await tileService.RebuildIncompleteZoomTilesAsync(gridStorage, maxTilesPerRun);
+                // Get all active tenants
+                var tenants = await tenantService.GetAllTenantsAsync();
+                var activeTenants = tenants.Where(t => t.IsActive).ToList();
 
-                if (rebuiltCount > 0)
+                _logger.LogInformation("Starting zoom rebuild cycle for {TenantCount} active tenants", activeTenants.Count);
+
+                int totalRebuiltCount = 0;
+
+                // Rebuild tiles for each active tenant
+                foreach (var tenant in activeTenants)
                 {
-                    _logger.LogInformation("Zoom rebuild cycle completed: {Count} tiles rebuilt", rebuiltCount);
+                    var rebuiltCount = await tileService.RebuildIncompleteZoomTilesAsync(
+                        tenant.Id,
+                        gridStorage,
+                        maxTilesPerRun - totalRebuiltCount);
+
+                    totalRebuiltCount += rebuiltCount;
+
+                    if (rebuiltCount > 0)
+                    {
+                        _logger.LogInformation("Tenant {TenantId}: Rebuilt {Count} tiles", tenant.Id, rebuiltCount);
+                    }
+
+                    // Stop if we've hit the max tiles limit
+                    if (totalRebuiltCount >= maxTilesPerRun)
+                    {
+                        _logger.LogInformation("Reached max tiles per run ({MaxTiles}), stopping for this cycle", maxTilesPerRun);
+                        break;
+                    }
+                }
+
+                if (totalRebuiltCount > 0)
+                {
+                    _logger.LogInformation("Zoom rebuild cycle completed: {Count} tiles rebuilt across all tenants", totalRebuiltCount);
                 }
 
                 await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);

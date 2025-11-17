@@ -29,5 +29,5 @@ public interface ITileService
     /// Rebuilds incomplete zoom tiles where new sub-tiles have been added since the zoom tile was created
     /// Returns the number of tiles rebuilt
     /// </summary>
-    Task<int> RebuildIncompleteZoomTilesAsync(string gridStorage, int maxTilesToRebuild);
+    Task<int> RebuildIncompleteZoomTilesAsync(string tenantId, string gridStorage, int maxTilesToRebuild);
 }
