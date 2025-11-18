@@ -266,7 +266,7 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: tenantId,
             factory: _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 100,              // 100 requests per minute
+                PermitLimit = 500,              // 100 requests per minute
                 Window = TimeSpan.FromMinutes(1),
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                 QueueLimit = 10
@@ -282,7 +282,7 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: tenantId,
             factory: _ => new SlidingWindowRateLimiterOptions
             {
-                PermitLimit = 20,               // 20 uploads per minute
+                PermitLimit = 100,               // 20 uploads per minute
                 Window = TimeSpan.FromMinutes(1),
                 SegmentsPerWindow = 6           // 10-second segments
             });
@@ -311,9 +311,9 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: "global",
             factory: _ => new ConcurrencyLimiterOptions
             {
-                PermitLimit = 1000,             // 1000 concurrent requests
+                PermitLimit = 2000,             // 1000 concurrent requests
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 100
+                QueueLimit = 1000
             });
     });
 
