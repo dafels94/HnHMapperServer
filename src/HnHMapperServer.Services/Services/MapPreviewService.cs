@@ -20,6 +20,7 @@ public class MapPreviewService : IMapPreviewService
     private readonly IPreviewUrlSigningService _signingService;
     private readonly ILogger<MapPreviewService> _logger;
     private readonly string _gridStorage;
+    private readonly string _iconStorage;
     private const int PREVIEW_SIZE = 4; // 4x4 grid of tiles
     private const int TILE_SIZE = 100; // Each tile is 100x100px
     private const int PREVIEW_RETENTION_DAYS = 2; // Reduced from 7 for security
@@ -48,6 +49,23 @@ public class MapPreviewService : IMapPreviewService
             // Resolve relative path
             _gridStorage = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", _gridStorage));
         }
+
+        // Get icon storage path from configuration (for marker icon overlay on previews)
+        var configuredIconStorage = configuration["IconStorage"];
+        if (!string.IsNullOrWhiteSpace(configuredIconStorage))
+        {
+            _iconStorage = Path.IsPathRooted(configuredIconStorage)
+                ? configuredIconStorage
+                : Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", configuredIconStorage));
+        }
+        else
+        {
+            // Default to Web project's wwwroot directory
+            _iconStorage = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "HnHMapperServer.Web", "wwwroot"));
+        }
+
+        _logger.LogInformation("MapPreviewService initialized with GridStorage={GridStorage}, IconStorage={IconStorage}",
+            _gridStorage, _iconStorage);
     }
 
     /// <summary>
@@ -280,15 +298,18 @@ public class MapPreviewService : IMapPreviewService
             // Ensure icon path has .png extension
             var fullIconPath = iconPath.EndsWith(".png") ? iconPath : $"{iconPath}.png";
 
-            // Construct full path to icon file in grid storage
-            var iconFilePath = Path.Combine(_gridStorage, fullIconPath);
+            // Construct full path to icon file in icon storage (wwwroot)
+            var iconFilePath = Path.Combine(_iconStorage, fullIconPath);
 
             if (!File.Exists(iconFilePath))
             {
-                _logger.LogWarning("Marker icon not found: {IconPath}, falling back to crosshair", iconFilePath);
+                _logger.LogWarning("Marker icon not found at {IconPath} (resolved from '{IconStorage}/{IconPath}'), falling back to crosshair",
+                    iconFilePath, _iconStorage, fullIconPath);
                 DrawMarkerPin(image, x, y);
                 return;
             }
+
+            _logger.LogDebug("Loading marker icon from {IconPath}", iconFilePath);
 
             // Load the icon image
             using var iconImg = Image.Load<Rgba32>(iconFilePath);
