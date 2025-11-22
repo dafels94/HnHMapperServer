@@ -52,16 +52,28 @@ public class DiscordWebhookService : IDiscordWebhookService
         {
             var embedData = await BuildEmbedAsync(notification, webhookUrl);
 
-            // Use the EXACT same pattern as TestWebhookAsync (which works)
-            // Build embed as anonymous object, not Dictionary
-            var embed = new
+            // Build embed dynamically to exclude null fields (Discord doesn't handle explicit nulls well)
+            // Start with required fields that are always present
+            var embed = new Dictionary<string, object>
             {
-                title = embedData.Title,
-                description = embedData.Description,
-                color = embedData.Color,
-                footer = new { text = embedData.Footer!.Text },
-                timestamp = embedData.Timestamp
+                ["title"] = embedData.Title!,
+                ["description"] = embedData.Description!,
+                ["color"] = embedData.Color!.Value,
+                ["timestamp"] = embedData.Timestamp!
             };
+
+            // Only add optional fields if they have values
+            if (!string.IsNullOrEmpty(embedData.Url))
+                embed["url"] = embedData.Url;
+
+            if (embedData.Thumbnail != null)
+                embed["thumbnail"] = new { url = embedData.Thumbnail.Url };
+
+            if (embedData.Image != null)
+                embed["image"] = new { url = embedData.Image.Url };
+
+            if (embedData.Footer != null)
+                embed["footer"] = new { text = embedData.Footer.Text };
 
             var payload = new
             {
@@ -73,7 +85,7 @@ public class DiscordWebhookService : IDiscordWebhookService
 
             // Debug logging - log the exact object before serialization
             _logger.LogDebug("Embed object: Title={Title}, Description={Description}, Color={Color}, HasFooter={HasFooter}, Timestamp={Timestamp}",
-                embed.title, embed.description, embed.color, embed.footer != null, embed.timestamp);
+                embed["title"], embed["description"], embed["color"], embed.ContainsKey("footer"), embed["timestamp"]);
 
             // Use PostAsJsonAsync like the test webhook (which works)
             var response = await httpClient.PostAsJsonAsync(webhookUrl, payload);
@@ -214,13 +226,23 @@ public class DiscordWebhookService : IDiscordWebhookService
             _ => notification.Type
         };
 
-        // Get base URL for map links
-        var baseUrl = _configuration["Discord:BaseUrl"] ?? _configuration["Kestrel:Endpoints:Http:Url"] ?? "http://localhost";
+        // Get base URL for map links from tenant's prefix configuration
+        // This is the same URL prefix shown in Admin → Config tab
+        // Query directly from Config table since we're in a background task without tenant context
+        var baseUrl = await _db.Config
+            .Where(c => c.Key == "prefix" && c.TenantId == notification.TenantId)
+            .Select(c => c.Value)
+            .FirstOrDefaultAsync() ?? "http://localhost";
         baseUrl = baseUrl.TrimEnd('/');
 
         // Detect localhost for development warning
         var isLocalhost = baseUrl.Contains("localhost", StringComparison.OrdinalIgnoreCase) ||
                           baseUrl.Contains("127.0.0.1");
+
+        // Check if localhost URLs should be allowed (for local development testing)
+        // When true, Discord embeds will include localhost URLs (images won't load but structure is testable)
+        var allowLocalhostUrls = _configuration.GetValue<bool>("Discord:AllowLocalhostUrls", false);
+        var shouldIncludeUrls = !isLocalhost || allowLocalhostUrls;
 
         // Try to parse marker data for enhanced formatting
         string? iconUrl = null;
@@ -239,12 +261,20 @@ public class DiscordWebhookService : IDiscordWebhookService
                     int? customMarkerId = actionData.TryGetValue("customMarkerId", out var customMarkerIdElement) && customMarkerIdElement.ValueKind != JsonValueKind.Null
                         ? customMarkerIdElement.GetInt32() : null;
 
+                    _logger.LogDebug("Parsed marker data from notification {NotificationId}: markerId={MarkerId}, customMarkerId={CustomMarkerId}, tenantId={TenantId}",
+                        notification.Id, markerId, customMarkerId, notification.TenantId);
+
                     // Fetch marker details from database
                     if (customMarkerId.HasValue)
                     {
+                        _logger.LogDebug("Attempting to fetch custom marker {CustomMarkerId}", customMarkerId.Value);
+                        // IMPORTANT: IgnoreQueryFilters() bypasses global tenant filter (no HttpContext in background task)
                         var customMarker = await _db.CustomMarkers
+                            .IgnoreQueryFilters()
                             .Where(m => m.Id == customMarkerId.Value && m.TenantId == notification.TenantId)
                             .FirstOrDefaultAsync();
+
+                        _logger.LogDebug("Custom marker result: {Result}", customMarker != null ? "Found" : "Not found");
 
                         if (customMarker != null)
                         {
@@ -255,27 +285,35 @@ public class DiscordWebhookService : IDiscordWebhookService
                     }
                     else if (markerId.HasValue)
                     {
+                        _logger.LogDebug("Attempting to fetch standard marker {MarkerId}", markerId.Value);
+                        // IMPORTANT: IgnoreQueryFilters() bypasses global tenant filter (no HttpContext in background task)
+                        // Manually filter by TenantId for safety
                         var marker = await _db.Markers
+                            .IgnoreQueryFilters()
                             .Where(m => m.Id == markerId.Value && m.TenantId == notification.TenantId)
                             .FirstOrDefaultAsync();
 
+                        _logger.LogDebug("Standard marker result: {Result}", marker != null ? $"Found '{marker.Name}'" : "Not found");
+
                         if (marker != null)
                         {
+                            _logger.LogDebug("Marker grid ID: {GridId}, attempting to fetch grid", marker.GridId);
                             // Look up grid to get MapId and coordinates
+                            // IMPORTANT: IgnoreQueryFilters() bypasses global tenant filter
                             var grid = await _db.Grids
+                                .IgnoreQueryFilters()
                                 .Where(g => g.Id == marker.GridId && g.TenantId == notification.TenantId)
                                 .FirstOrDefaultAsync();
+
+                            _logger.LogDebug("Grid result: {Result}", grid != null ? $"Found (Map={grid.Map}, Coords={grid.CoordX},{grid.CoordY})" : "Not found");
 
                             if (grid != null)
                             {
                                 markerName = marker.Name;
                                 iconUrl = $"{baseUrl}/icons/{marker.Image}";
-                                // Grid ID format is "x_y" so split to get coordinates
-                                var gridCoords = marker.GridId.Split('_');
-                                if (gridCoords.Length == 2)
-                                {
-                                    mapUrl = $"{baseUrl}/map?mapid={grid.Map}&x={gridCoords[0]}&y={gridCoords[1]}";
-                                }
+                                // Use grid coordinates directly from the Grids table
+                                mapUrl = $"{baseUrl}/map?mapid={grid.Map}&x={grid.CoordX}&y={grid.CoordY}";
+                                _logger.LogDebug("Set marker data: name={Name}, iconUrl={IconUrl}, mapUrl={MapUrl}", markerName, iconUrl, mapUrl);
                             }
                         }
                     }
@@ -306,7 +344,9 @@ public class DiscordWebhookService : IDiscordWebhookService
                     // Generate preview for custom markers
                     if (customMarkerId.HasValue)
                     {
+                        // IMPORTANT: IgnoreQueryFilters() bypasses global tenant filter
                         var customMarker = await _db.CustomMarkers
+                            .IgnoreQueryFilters()
                             .Where(m => m.Id == customMarkerId.Value && m.TenantId == notification.TenantId)
                             .FirstOrDefaultAsync();
 
@@ -330,13 +370,17 @@ public class DiscordWebhookService : IDiscordWebhookService
                     // Generate preview for regular markers
                     else if (markerId.HasValue)
                     {
+                        // IMPORTANT: IgnoreQueryFilters() bypasses global tenant filter
                         var marker = await _db.Markers
+                            .IgnoreQueryFilters()
                             .Where(m => m.Id == markerId.Value && m.TenantId == notification.TenantId)
                             .FirstOrDefaultAsync();
 
                         if (marker != null)
                         {
+                            // IMPORTANT: IgnoreQueryFilters() bypasses global tenant filter
                             var grid = await _db.Grids
+                                .IgnoreQueryFilters()
                                 .Where(g => g.Id == marker.GridId && g.TenantId == notification.TenantId)
                                 .FirstOrDefaultAsync();
 
@@ -383,7 +427,8 @@ public class DiscordWebhookService : IDiscordWebhookService
         }
 
         // Create embed DTO - null fields are automatically excluded by JsonIgnoreCondition
-        // IMPORTANT: Exclude URL, thumbnail and image on localhost because Discord will reject the embed if it can't fetch the URLs
+        // IMPORTANT: By default, exclude URL/thumbnail/image on localhost because Discord can't fetch them
+        // In development with AllowLocalhostUrls=true, include them to test embed structure (images won't load but fields are present)
         var embed = new DiscordEmbedDto
         {
             Title = !string.IsNullOrEmpty(mapUrl)
@@ -391,9 +436,9 @@ public class DiscordWebhookService : IDiscordWebhookService
                 : $"{emoji} {notification.Title}",
             Description = description,
             Color = color,
-            Url = !isLocalhost && !string.IsNullOrEmpty(mapUrl) ? mapUrl : null,
-            Thumbnail = !isLocalhost && !string.IsNullOrEmpty(iconUrl) ? new DiscordEmbedThumbnail { Url = iconUrl } : null,
-            Image = !isLocalhost && !string.IsNullOrEmpty(previewUrl) ? new DiscordEmbedImage { Url = previewUrl } : null,
+            Url = shouldIncludeUrls && !string.IsNullOrEmpty(mapUrl) ? mapUrl : null,
+            Thumbnail = shouldIncludeUrls && !string.IsNullOrEmpty(iconUrl) ? new DiscordEmbedThumbnail { Url = iconUrl } : null,
+            Image = shouldIncludeUrls && !string.IsNullOrEmpty(previewUrl) ? new DiscordEmbedImage { Url = previewUrl } : null,
             Footer = new DiscordEmbedFooter { Text = "HavenMap Notification" },
             Timestamp = notification.CreatedAt.ToString("O")  // ISO 8601 format
         };
