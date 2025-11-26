@@ -1,5 +1,6 @@
 # GitHub Actions workflow to build and push Docker images to GitHub Container Registry (GHCR)
 # Triggers on pushes to main branch, manual dispatch, and release publication
+# Uses matrix strategy for parallel builds across architectures and services
 
 name: build-and-push
 
@@ -7,31 +8,28 @@ on:
   # Trigger on pushes to master branch
   push:
     branches: [ master ]
-  
+
   # Allow manual workflow dispatch from GitHub UI
   workflow_dispatch: {}
-  
+
   # Trigger on release publication for semantic versioning
   release:
     types: [published]
 
 jobs:
-  docker:
+  # Compute version information once and share across matrix jobs
+  version:
     runs-on: ubuntu-latest
-    
-    # Required permissions for GHCR push
-    permissions:
-      contents: read       # Read repository contents
-      packages: write      # Push to GitHub Container Registry
-    
+    outputs:
+      build_version: ${{ steps.version.outputs.BUILD_VERSION }}
+      build_commit: ${{ steps.version.outputs.BUILD_COMMIT }}
+      build_date: ${{ steps.version.outputs.BUILD_DATE }}
     steps:
-      # Step 1: Checkout the repository code with full history for git describe
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history needed for git describe
-      
-      # Step 2: Compute version information from Git
+
       - name: Compute version information
         id: version
         run: |
@@ -39,88 +37,154 @@ jobs:
           BUILD_VERSION=$(git describe --tags --always 2>/dev/null || echo "sha-$(git rev-parse --short HEAD)")
           BUILD_COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          
+
           echo "BUILD_VERSION=${BUILD_VERSION}" >> $GITHUB_OUTPUT
           echo "BUILD_COMMIT=${BUILD_COMMIT}" >> $GITHUB_OUTPUT
           echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_OUTPUT
-          
+
           echo "Version: ${BUILD_VERSION}"
           echo "Commit: ${BUILD_COMMIT}"
           echo "Build Date: ${BUILD_DATE}"
-      
-      # Step 3: Set up Docker Buildx for multi-platform builds and caching
+
+  # Build images in parallel using matrix strategy
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+
+    # Matrix: Build each service for each architecture in parallel
+    strategy:
+      fail-fast: false  # Continue other builds if one fails
+      matrix:
+        service:
+          - name: api
+            dockerfile: docker/api.Dockerfile
+            image: hnhmapper-api
+          - name: web
+            dockerfile: docker/web.Dockerfile
+            image: hnhmapper-web
+        platform:
+          - linux/amd64
+          - linux/arm64/v8
+
+    # Required permissions for GHCR push
+    permissions:
+      contents: read       # Read repository contents
+      packages: write      # Push to GitHub Container Registry
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      
-      # Step 4: Login to GitHub Container Registry using GitHub token
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
-      # Step 5: Build and push API image with version information
-      # Tags with both 'main' (latest) and commit SHA for traceability
-      # Builds for both AMD64 and ARM64 platforms
-      - name: Build and Push API Image
+
+      # Sanitize platform name for use in tags (linux/amd64 -> linux-amd64)
+      - name: Prepare platform tag
+        id: platform
+        run: |
+          PLATFORM_TAG=$(echo "${{ matrix.platform }}" | sed 's/\//-/g')
+          echo "tag=${PLATFORM_TAG}" >> $GITHUB_OUTPUT
+
+      # Build and push individual architecture image
+      - name: Build and Push ${{ matrix.service.name }} (${{ matrix.platform }})
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/api.Dockerfile
+          file: ${{ matrix.service.dockerfile }}
           push: true
-          platforms: linux/amd64,linux/arm64/v8
+          platforms: ${{ matrix.platform }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/hnhmapper-api:main
-            ghcr.io/${{ github.repository_owner }}/hnhmapper-api:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.service.image }}:${{ github.sha }}-${{ steps.platform.outputs.tag }}
           build-args: |
-            BUILD_VERSION=${{ steps.version.outputs.BUILD_VERSION }}
-            BUILD_COMMIT=${{ steps.version.outputs.BUILD_COMMIT }}
-            BUILD_DATE=${{ steps.version.outputs.BUILD_DATE }}
+            BUILD_VERSION=${{ needs.version.outputs.build_version }}
+            BUILD_COMMIT=${{ needs.version.outputs.build_commit }}
+            BUILD_DATE=${{ needs.version.outputs.build_date }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.repository.updated_at }}
-      
-      # Step 6: Build and push Web image with version information
-      # Tags with both 'main' (latest) and commit SHA for traceability
-      # Builds for both AMD64 and ARM64 platforms
-      - name: Build and Push Web Image
-        uses: docker/build-push-action@v6
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Merge architecture-specific images into multi-platform manifests
+  manifest:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        service:
+          - api
+          - web
+
+    permissions:
+      packages: write
+
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
         with:
-          context: .
-          file: docker/web.Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64/v8
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/hnhmapper-web:main
-            ghcr.io/${{ github.repository_owner }}/hnhmapper-web:${{ github.sha }}
-          build-args: |
-            BUILD_VERSION=${{ steps.version.outputs.BUILD_VERSION }}
-            BUILD_COMMIT=${{ steps.version.outputs.BUILD_COMMIT }}
-            BUILD_DATE=${{ steps.version.outputs.BUILD_DATE }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
-      
-      # Step 7: Tag release versions when a GitHub release is published
-      # Creates semantic version tags (e.g., v1.0.0) from the git tag
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Create multi-platform manifest for :main tag
+      - name: Create and push manifest for hnhmapper-${{ matrix.service }}:main
+        run: |
+          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/hnhmapper-${{ matrix.service }}:main \
+            ghcr.io/${{ github.repository_owner }}/hnhmapper-${{ matrix.service }}:${{ github.sha }}-linux-amd64 \
+            ghcr.io/${{ github.repository_owner }}/hnhmapper-${{ matrix.service }}:${{ github.sha }}-linux-arm64-v8
+
+      # Create multi-platform manifest for commit SHA tag
+      - name: Create and push manifest for hnhmapper-${{ matrix.service }}:${{ github.sha }}
+        run: |
+          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/hnhmapper-${{ matrix.service }}:${{ github.sha }} \
+            ghcr.io/${{ github.repository_owner }}/hnhmapper-${{ matrix.service }}:${{ github.sha }}-linux-amd64 \
+            ghcr.io/${{ github.repository_owner }}/hnhmapper-${{ matrix.service }}:${{ github.sha }}-linux-arm64-v8
+
+  # Tag release versions when a GitHub release is published
+  release:
+    needs: manifest
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    permissions:
+      packages: write
+
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Tag Release Versions
-        if: startsWith(github.ref, 'refs/tags/')
         run: |
           # Extract version from git tag (e.g., refs/tags/v1.0.0 -> v1.0.0)
           VER=${GITHUB_REF#refs/tags/}
-          
+
           # Define image base names
           API=ghcr.io/${{ github.repository_owner }}/hnhmapper-api
           WEB=ghcr.io/${{ github.repository_owner }}/hnhmapper-web
-          
+
           echo "Tagging release version: $VER"
-          
+
           # Create version-specific tags by copying from :main
           docker buildx imagetools create -t $API:$VER $API:main
           docker buildx imagetools create -t $WEB:$VER $WEB:main
-          
-          echo "Successfully tagged $API:$VER and $WEB:$VER"
 
+          echo "Successfully tagged $API:$VER and $WEB:$VER"
