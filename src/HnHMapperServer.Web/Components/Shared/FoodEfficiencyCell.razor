@@ -1,0 +1,69 @@
+@using HnHMapperServer.Core.DTOs
+@using HnHMapperServer.Web.Helpers
+
+@* Food Efficiency Cell Component
+   Displays tier-adjusted efficiency with concentration bonus:
+   - Expected stat value (probability × tier multiplier)
+   - Concentration bonus (rewards focused stat distribution)
+   - Dominant stat indicator with percentage and color
+*@
+
+@if (Food.Feps.Any() && Food.Hunger > 0)
+{
+    var dominantStatInfo = FoodHelpers.GetDominantStat(Food);
+    if (dominantStatInfo.HasValue)
+    {
+        var (baseStat, dominantStatPercent, firstFep) = dominantStatInfo.Value;
+        var totalFep = Food.Feps.Sum(f => (double)f.BaseValue);
+
+        // Calculate tier-adjusted expected stat value
+        double expectedStatValue = 0;
+        foreach (var fep in Food.Feps)
+        {
+            var probability = (double)fep.BaseValue / totalFep;
+            var statGain = FoodHelpers.GetTierMultiplier(fep.AttributeName);
+            expectedStatValue += probability * statGain;
+        }
+
+        // Apply concentration bonus
+        var baseEfficiency = expectedStatValue / Food.Hunger;
+        var concentrationBonus = 1 + (dominantStatPercent / 100);
+        var efficiency = baseEfficiency * concentrationBonus;
+
+        var statColor = FoodHelpers.GetFepColorStyle(firstFep.AttributeName);
+
+        <MudStack Spacing="0">
+            <MudText Typo="Typo.body2"><strong>@efficiency.ToString("F2")</strong></MudText>
+            @if (ShowDominantStat)
+            {
+                <MudText Typo="Typo.caption" Style="@($"color: {statColor};")">
+                    (@dominantStatPercent.ToString("F0")% @baseStat)
+                </MudText>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudText Typo="Typo.caption">N/A</MudText>
+    }
+}
+else
+{
+    <MudText Typo="Typo.caption">N/A</MudText>
+}
+
+@code {
+    /// <summary>
+    /// Food DTO containing FEPs and hunger data.
+    /// </summary>
+    [Parameter]
+    [EditorRequired]
+    public FoodDto Food { get; set; } = default!;
+
+    /// <summary>
+    /// Whether to show the dominant stat indicator below the efficiency value.
+    /// Default: true
+    /// </summary>
+    [Parameter]
+    public bool ShowDominantStat { get; set; } = true;
+}

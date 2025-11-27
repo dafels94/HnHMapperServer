@@ -1,0 +1,80 @@
+@using HnHMapperServer.Core.DTOs
+@using HnHMapperServer.Web.Helpers
+@using System.Globalization
+@inject IJSRuntime JS
+
+@* Food FEPs Bar Component
+   Displays a stacked horizontal bar chart showing FEP distribution.
+   Uses CSS Grid with fr units for reliable proportional sizing.
+   Click to copy FEP composition to clipboard.
+*@
+
+@if (Feps != null && Feps.Any())
+{
+    var sortedFeps = Feps
+        .OrderBy(f => FoodHelpers.GetStatOrder(f.AttributeName))
+        .ThenByDescending(f => f.BaseValue)
+        .ToList();
+
+    // Build grid-template-columns using fr units (e.g., "7fr 3fr 0.1fr")
+    // Browser calculates exact proportions - no rounding issues
+    var gridColumns = string.Join(" ", sortedFeps.Select(f =>
+        ((double)f.BaseValue).ToString("0.##", CultureInfo.InvariantCulture) + "fr"));
+
+    var totalFep = sortedFeps.Sum(f => (double)f.BaseValue);
+
+    <MudTooltip Text="@(copied ? "Copied!" : "Click to copy FEPs")" Placement="Placement.Top">
+        <div @onclick="CopyFepsToClipboard"
+             style="display: grid; grid-template-columns: @gridColumns; width: @(Width)px; height: 24px; border-radius: 4px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;">
+            @foreach (var fep in sortedFeps)
+            {
+                var colorStyle = FoodHelpers.GetFepColorStyle(fep.AttributeName);
+                var percentage = ((double)fep.BaseValue / totalFep) * 100;
+
+                <div style="background-color: @colorStyle; display: flex; align-items: center; justify-content: center; min-width: 0; height: 100%;">
+                    @if (percentage > 12)
+                    {
+                        <span style="color: white; font-size: 0.65rem; font-weight: bold; text-shadow: 0 1px 2px rgba(0,0,0,0.4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 2px;">
+                            @FoodHelpers.GetBaseStat(fep.AttributeName) @fep.BaseValue.ToString("F0")
+                        </span>
+                    }
+                </div>
+            }
+        </div>
+    </MudTooltip>
+}
+
+@code {
+    [Parameter]
+    [EditorRequired]
+    public List<FoodFepDto> Feps { get; set; } = default!;
+
+    [Parameter]
+    public int Width { get; set; } = 200;
+
+    private bool copied = false;
+
+    private async Task CopyFepsToClipboard()
+    {
+        if (Feps == null || !Feps.Any()) return;
+
+        var sortedFeps = Feps
+            .OrderBy(f => FoodHelpers.GetStatOrder(f.AttributeName))
+            .ThenByDescending(f => f.BaseValue)
+            .ToList();
+
+        // Format: "STR +1: 7.0, AGI +2: 3.5, DEX +1: 0.1"
+        var fepText = string.Join(", ", sortedFeps.Select(f =>
+            $"{f.AttributeName}: {f.BaseValue.ToString("F1", CultureInfo.InvariantCulture)}"));
+
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", fepText);
+
+        copied = true;
+        StateHasChanged();
+
+        // Reset after 2 seconds
+        await Task.Delay(2000);
+        copied = false;
+        StateHasChanged();
+    }
+}

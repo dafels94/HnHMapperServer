@@ -42,6 +42,10 @@ public static partial class ClientEndpoints
         group.MapPost("/markerDelete", MarkerDelete).DisableAntiforgery();
         group.MapPost("/markerUpdate", MarkerUpdate).DisableAntiforgery();
         group.MapPost("/markerReadyTime", MarkerReadyTime).DisableAntiforgery();
+
+        // Cookbook endpoints
+        group.MapPost("/foodSubmit", FoodSubmit).DisableAntiforgery();
+
         group.MapGet("", RedirectToMap);
     }
 
@@ -667,6 +671,58 @@ public static partial class ClientEndpoints
                 validationResult.TenantId, validationResult.UserId);
 
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Endpoint: POST /client/{token}/foodSubmit
+    /// Submit a food/recipe to the cookbook
+    /// </summary>
+    private static async Task<IResult> FoodSubmit(
+        [FromRoute] string token,
+        HttpContext context,
+        ApplicationDbContext db,
+        ITokenService tokenService,
+        IFoodSubmissionService foodSubmissionService,
+        ILogger<Program> logger)
+    {
+        if (!await ClientTokenHelpers.HasUploadAsync(context, db, tokenService, token, logger))
+            return Results.Unauthorized();
+
+        // Read food data from request body
+        var foodDto = await context.Request.ReadFromJsonAsync<SubmitFoodDto>(new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+
+        if (foodDto == null)
+            return Results.BadRequest("Invalid food submission payload");
+
+        // Get user ID from context
+        var userId = context.Items["UserId"] as string;
+        if (userId == null)
+            return Results.Unauthorized();
+
+        try
+        {
+            // Submit food (auto-publishes if verified, creates submission otherwise)
+            var (published, foodId, submissionId) = await foodSubmissionService.SubmitFoodAsync(foodDto, userId);
+
+            if (published)
+            {
+                logger.LogInformation("Food auto-published: Id={FoodId}, UserId={UserId}", foodId, userId);
+                return Results.Ok(new { status = "published", foodId });
+            }
+            else
+            {
+                logger.LogInformation("Food submission created: Id={SubmissionId}, UserId={UserId}", submissionId, userId);
+                return Results.Ok(new { status = "pending_approval", submissionId });
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to submit food: UserId={UserId}", userId);
+            return Results.Problem("Failed to submit food");
         }
     }
 }

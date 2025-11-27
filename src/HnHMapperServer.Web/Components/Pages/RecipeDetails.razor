@@ -1,0 +1,415 @@
+@page "/cookbook/{id:int}"
+@rendermode InteractiveServer
+@using HnHMapperServer.Core.DTOs
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Authorization
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Navigation
+@attribute [Authorize]
+
+<PageTitle>@(food?.Name ?? "Recipe") - Cookbook</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Large" Class="mt-4">
+    @if (loading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else if (food == null)
+    {
+        <MudAlert Severity="Severity.Error">Recipe not found.</MudAlert>
+        <MudButton Variant="Variant.Text" Color="Color.Primary" OnClick="@(() => Navigation.NavigateTo("/cookbook"))">
+            Back to Cookbook
+        </MudButton>
+    }
+    else
+    {
+        <MudBreadcrumbs Items="@breadcrumbs" Class="mb-4" />
+
+        <MudGrid>
+            <MudItem xs="12" md="8">
+                <MudPaper Class="pa-4 mb-4">
+                    <MudText Typo="Typo.h4" GutterBottom="true">@food.Name</MudText>
+
+                    <MudChipSet T="string">
+                        @if (food.IsGlobal)
+                        {
+                            <MudChip T="string" Color="Color.Info">Global Recipe</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Color="Color.Secondary">Tenant Recipe</MudChip>
+                        }
+                        @if (food.IsSmoked)
+                        {
+                            <MudChip T="string" Color="Color.Warning">Smoked</MudChip>
+                        }
+                        @if (food.IsVerified)
+                        {
+                            <MudChip T="string" Color="Color.Success" Icon="@Icons.Material.Filled.CheckCircle">Verified</MudChip>
+                        }
+                        <MudChip T="string" Color="@GetTierColor(food.Tier)">@GetTierIcon(food.Tier) @food.Tier Tier</MudChip>
+                        @if (food.HasPsy)
+                        {
+                            <MudChip T="string" Color="Color.Secondary">Contains PSY (Rare!)</MudChip>
+                        }
+                    </MudChipSet>
+
+                    @if (!string.IsNullOrEmpty(food.Description))
+                    {
+                        <MudText Typo="Typo.body1" Class="mt-4">@food.Description</MudText>
+                    }
+
+                    <MudDivider Class="my-4" />
+
+                    <MudText Typo="Typo.h6" GutterBottom="true">Food Quality Metrics</MudText>
+                    <MudGrid Class="mb-4">
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption">Efficiency</MudText>
+                            <MudText Typo="Typo.h6" Color="Color.Primary">@food.Efficiency.ToString("F1")</MudText>
+                            <MudText Typo="Typo.caption">Power / Hunger</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption">Purity</MudText>
+                            <MudProgressLinear Color="@GetPurityColor(food.Purity)"
+                                             Value="@((double)(food.Purity * 100))"
+                                             Size="Size.Medium"
+                                             Rounded="true"
+                                             Class="mb-1" />
+                            <MudText Typo="Typo.body2">@((food.Purity * 100).ToString("F0"))% useful FEPs</MudText>
+                            @if (food.ChaTrash > 0)
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Warning">
+                                    (@food.ChaTrash.ToString("F1") CHA trash)
+                                </MudText>
+                            }
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption">Fighter Score</MudText>
+                            <MudText Typo="Typo.h6">@food.FighterScore.ToString("F0")</MudText>
+                            <MudText Typo="Typo.caption">@food.FighterPercent.ToString("F0")% of total</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption">Crafter Score</MudText>
+                            <MudText Typo="Typo.h6">@food.CrafterScore.ToString("F0")</MudText>
+                            <MudText Typo="Typo.caption">@food.CrafterPercent.ToString("F0")% of total</MudText>
+                        </MudItem>
+                    </MudGrid>
+
+                    <MudDivider Class="my-4" />
+
+                    <MudText Typo="Typo.h6" GutterBottom="true">Basic Properties</MudText>
+                    <MudGrid>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption">Energy</MudText>
+                            <MudText Typo="Typo.h6">@food.Energy</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption">Hunger</MudText>
+                            <MudText Typo="Typo.h6">@food.Hunger</MudText>
+                        </MudItem>
+                        @if (!string.IsNullOrEmpty(food.ResourceType))
+                        {
+                            <MudItem xs="12" sm="6">
+                                <MudText Typo="Typo.caption">Resource Type</MudText>
+                                <MudText Typo="Typo.body2">@food.ResourceType</MudText>
+                            </MudItem>
+                        }
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption">Total FEPs</MudText>
+                            <MudText Typo="Typo.h6">@food.TotalFep.ToString("F0")</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption">Tier +2 FEPs</MudText>
+                            <MudText Typo="Typo.h6">@food.Tier2Count</MudText>
+                        </MudItem>
+                    </MudGrid>
+
+                    <MudDivider Class="my-4" />
+
+                    <MudText Typo="Typo.h6" GutterBottom="true">Ingredients</MudText>
+                    @if (food.Ingredients.Any())
+                    {
+                        <MudList T="string" Dense="true">
+                            @foreach (var ingredient in food.Ingredients)
+                            {
+                                <MudListItem T="string" Icon="@Icons.Material.Filled.Circle" IconSize="Size.Small">
+                                    <MudText>
+                                        @ingredient.Name
+                                        @if (ingredient.Quantity > 0)
+                                        {
+                                            <span> - @ingredient.Quantity.ToString("F2")</span>
+                                        }
+                                        @if (ingredient.Quality.HasValue)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Info">Q@ingredient.Quality</MudChip>
+                                        }
+                                    </MudText>
+                                </MudListItem>
+                            }
+                        </MudList>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">No ingredients listed</MudText>
+                    }
+
+                    <MudDivider Class="my-4" />
+
+                    <MudText Typo="Typo.h6" GutterBottom="true">Base Food Event Points (FEPs)</MudText>
+                    @if (food.Feps.Any())
+                    {
+                        var sortedFeps = food.Feps.OrderByDescending(f => f.BaseValue).ToList();
+                        var totalFep = sortedFeps.Sum(f => (double)f.BaseValue);
+
+                        <div style="display: flex; width: 100%; height: 40px; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15); margin-top: 8px;">
+                            @{
+                                var accumulatedPercentage = 0.0;
+                            }
+                            @for (int i = 0; i < sortedFeps.Count; i++)
+                            {
+                                var fep = sortedFeps[i];
+                                var percentage = ((double)fep.BaseValue / totalFep) * 100;
+                                var colorStyle = GetFepColorStyle(fep.AttributeName);
+                                var isLast = i == sortedFeps.Count - 1;
+                                var actualPercentage = isLast ? (100 - accumulatedPercentage) : percentage;
+                                accumulatedPercentage += percentage;
+                                var borderStyle = isLast ? "" : "border-right: 1px solid rgba(255,255,255,0.2);";
+                                <div style="@(isLast ? "flex: 1;" : $"width: {percentage}%;") @borderStyle background-color: @colorStyle; display: flex; align-items: center; justify-content: center; position: relative;">
+                                    @if (actualPercentage > 5)
+                                    {
+                                        <span style="color: white; font-size: 0.9rem; font-weight: bold; text-shadow: 0 1px 2px rgba(0,0,0,0.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;">
+                                            @fep.AttributeName @fep.BaseValue.ToString("F1")
+                                        </span>
+                                    }
+                                    <MudTooltip Text="@($"{fep.AttributeName}: {fep.BaseValue:F2}")">
+                                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0;"></div>
+                                    </MudTooltip>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">No FEPs listed</MudText>
+                    }
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.h6" GutterBottom="true">FEP Calculator</MudText>
+                    <MudText Typo="Typo.body2" Class="mb-4">
+                        Calculate effective FEPs based on ingredient quality.
+                    </MudText>
+
+                    <MudSlider @bind-Value="quality"
+                              Min="10"
+                              Max="100"
+                              Step="1"
+                              Color="Color.Primary"
+                              Variant="Variant.Filled">
+                        Quality: Q@quality
+                    </MudSlider>
+
+                    <MudButton Variant="Variant.Filled"
+                              Color="Color.Primary"
+                              FullWidth="true"
+                              OnClick="CalculateFeps"
+                              Class="mt-2">
+                        Calculate
+                    </MudButton>
+
+                    @if (calculatedFood != null && calculatedFood.Feps.Any())
+                    {
+                        <MudDivider Class="my-4" />
+                        <MudText Typo="Typo.subtitle1" GutterBottom="true">
+                            Effective FEPs at Q@quality
+                        </MudText>
+
+                        var sortedCalcFeps = calculatedFood.Feps.OrderByDescending(f => f.EffectiveValue ?? 0).ToList();
+                        var totalCalcFep = sortedCalcFeps.Sum(f => (double)(f.EffectiveValue ?? 0));
+
+                        <div style="display: flex; width: 100%; height: 40px; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15); margin-top: 8px;">
+                            @{
+                                var accumulatedCalcPercentage = 0.0;
+                            }
+                            @for (int i = 0; i < sortedCalcFeps.Count; i++)
+                            {
+                                var fep = sortedCalcFeps[i];
+                                var effectiveValue = fep.EffectiveValue ?? 0;
+                                var percentage = totalCalcFep > 0 ? ((double)effectiveValue / totalCalcFep) * 100 : 0;
+                                var multiplier = fep.BaseValue > 0 ? (effectiveValue / fep.BaseValue) : 0;
+                                var colorStyle = GetFepColorStyle(fep.AttributeName);
+                                var isLast = i == sortedCalcFeps.Count - 1;
+                                var actualPercentage = isLast ? (100 - accumulatedCalcPercentage) : percentage;
+                                accumulatedCalcPercentage += percentage;
+                                var borderStyle = isLast ? "" : "border-right: 1px solid rgba(255,255,255,0.2);";
+                                <div style="@(isLast ? "flex: 1;" : $"width: {percentage}%;") @borderStyle background-color: @colorStyle; display: flex; align-items: center; justify-content: center; position: relative;">
+                                    @if (actualPercentage > 5)
+                                    {
+                                        <span style="color: white; font-size: 0.9rem; font-weight: bold; text-shadow: 0 1px 2px rgba(0,0,0,0.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;">
+                                            @fep.AttributeName @effectiveValue.ToString("F1")
+                                        </span>
+                                    }
+                                    <MudTooltip Text="@($"{fep.AttributeName}: {effectiveValue:F2} ({multiplier:F2}x)")">
+                                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0;"></div>
+                                    </MudTooltip>
+                                </div>
+                            }
+                        </div>
+
+                        <MudAlert Severity="Severity.Info" Class="mt-4" Dense="true">
+                            Formula: Effective FEP = Base × √(Quality ÷ 10)
+                        </MudAlert>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <MudButton Variant="Variant.Text"
+                  Color="Color.Primary"
+                  StartIcon="@Icons.Material.Filled.ArrowBack"
+                  OnClick="@(() => Navigation.NavigateTo("/cookbook"))"
+                  Class="mt-4">
+            Back to Cookbook
+        </MudButton>
+    }
+</MudContainer>
+
+@code {
+    [Parameter]
+    public int Id { get; set; }
+
+    private FoodDto? food;
+    private FoodDto? calculatedFood;
+    private bool loading = true;
+    private int quality = 40;
+
+    private List<BreadcrumbItem> breadcrumbs = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFood();
+    }
+
+    private async Task LoadFood()
+    {
+        loading = true;
+        try
+        {
+            var http = HttpClientFactory.CreateClient("API");
+            food = await http.GetFromJsonAsync<FoodDto>($"/api/foods/{Id}");
+
+            if (food != null)
+            {
+                breadcrumbs = new List<BreadcrumbItem>
+                {
+                    new BreadcrumbItem("Cookbook", href: "/cookbook"),
+                    new BreadcrumbItem(food.Name, href: null, disabled: true)
+                };
+
+                // Calculate initial FEPs at Q40
+                await CalculateFeps();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading food: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task CalculateFeps()
+    {
+        if (food == null) return;
+
+        try
+        {
+            var http = HttpClientFactory.CreateClient("API");
+            var request = new { Food = food, Quality = quality };
+            var response = await http.PostAsJsonAsync("/api/foods/calculate-feps", request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                calculatedFood = await response.Content.ReadFromJsonAsync<FoodDto>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error calculating FEPs: {ex.Message}");
+        }
+    }
+
+    private Color GetTierColor(string tier)
+    {
+        return tier switch
+        {
+            "Best" => Color.Success,
+            "Mid" => Color.Warning,
+            "Low" => Color.Default,
+            _ => Color.Default
+        };
+    }
+
+    private string GetTierIcon(string tier)
+    {
+        return tier switch
+        {
+            "Best" => "🥇",
+            "Mid" => "🥈",
+            "Low" => "🥉",
+            _ => ""
+        };
+    }
+
+    private Color GetFepColor(string attributeName)
+    {
+        // Extract base attribute name (remove any tier modifiers like "+2")
+        var baseAttr = attributeName.Split('+')[0].Trim();
+
+        return baseAttr.ToUpperInvariant() switch
+        {
+            "STR" => Color.Error,        // Red - Strength
+            "AGI" => Color.Info,          // Blue - Agility
+            "CON" => Color.Secondary,     // Purple - Constitution
+            "INT" => Color.Primary,       // Light Blue - Intelligence
+            "CHA" => Color.Success,       // Green - Charisma
+            "DEX" => Color.Warning,       // Yellow/Orange - Dexterity
+            "WILL" => Color.Dark,         // Dark - Will
+            "PSY" => Color.Tertiary,      // Pink/Magenta - Psyche
+            "PER" => Color.Warning,       // Orange - Perception
+            _ => Color.Default
+        };
+    }
+
+    private string GetFepColorStyle(string attributeName)
+    {
+        // Extract base attribute name (remove any tier modifiers like "+2")
+        var baseAttr = attributeName.Split('+')[0].Trim();
+
+        return baseAttr.ToUpperInvariant() switch
+        {
+            "STR" => "#f44336",     // Red - Strength
+            "AGI" => "#2196f3",     // Blue - Agility
+            "CON" => "#9c27b0",     // Purple - Constitution
+            "INT" => "#03a9f4",     // Light Blue - Intelligence
+            "CHA" => "#4caf50",     // Green - Charisma
+            "DEX" => "#ff9800",     // Orange - Dexterity
+            "WILL" => "#424242",    // Dark Gray - Will
+            "PSY" => "#e91e63",     // Pink - Psyche
+            "PER" => "#ff5722",     // Deep Orange - Perception
+            _ => "#9e9e9e"          // Gray - Default
+        };
+    }
+
+    private Color GetPurityColor(decimal purity)
+    {
+        if (purity >= 0.90m) return Color.Success;
+        if (purity >= 0.70m) return Color.Info;
+        if (purity >= 0.50m) return Color.Warning;
+        return Color.Error;
+    }
+}

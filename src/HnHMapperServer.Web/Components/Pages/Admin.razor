@@ -54,6 +54,11 @@
             <MapManagement />
         </MudTabPanel>
 
+        @* Food/Cookbook Management Tab *@
+        <MudTabPanel Text="Cookbook" Icon="@Icons.Material.Filled.Restaurant">
+            <FoodManagement TenantId="@(TenantContext.CurrentTenant?.Id ?? "")" />
+        </MudTabPanel>
+
         @* Tenant Audit Logs Tab *@
         <MudTabPanel Text="Audit Logs" Icon="@Icons.Material.Filled.History">
             <TenantAuditLogs />

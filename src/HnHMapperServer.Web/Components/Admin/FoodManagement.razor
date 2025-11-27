@@ -1,0 +1,300 @@
+@using HnHMapperServer.Core.DTOs
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+
+<MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-6">
+    <MudTabPanel Text="Pending Submissions" Icon="@Icons.Material.Filled.PendingActions">
+        <MudText Typo="Typo.h6" Class="mb-4">Pending Recipe Submissions</MudText>
+
+        @if (loadingSubmissions)
+        {
+            <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+        }
+        else if (submissions == null || submissions.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info">No pending submissions.</MudAlert>
+        }
+        else
+        {
+            <MudTable Items="@submissions" Hover="true" Breakpoint="Breakpoint.Sm" Dense="true">
+                <HeaderContent>
+                    <MudTh>Recipe Name</MudTh>
+                    <MudTh>Submitted By</MudTh>
+                    <MudTh>Submitted At</MudTh>
+                    <MudTh>Type</MudTh>
+                    <MudTh>Actions</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Recipe Name">@context.Data.Name</MudTd>
+                    <MudTd DataLabel="Submitted By">@context.SubmittedBy</MudTd>
+                    <MudTd DataLabel="Submitted At">@context.SubmittedAt.ToLocalTime().ToString("g")</MudTd>
+                    <MudTd DataLabel="Type">
+                        @if (context.Data.IsGlobal)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info">Global</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Secondary">Tenant</MudChip>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Actions">
+                        <MudButtonGroup Size="Size.Small" Variant="Variant.Outlined">
+                            <MudButton Color="Color.Info"
+                                      OnClick="@(() => ViewSubmission(context))">
+                                View
+                            </MudButton>
+                            <MudButton Color="Color.Success"
+                                      OnClick="@(() => ApproveSubmission(context.Id))">
+                                Approve
+                            </MudButton>
+                            <MudButton Color="Color.Error"
+                                      OnClick="@(() => RejectSubmission(context.Id))">
+                                Reject
+                            </MudButton>
+                        </MudButtonGroup>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+    </MudTabPanel>
+
+    <MudTabPanel Text="Verified Contributors" Icon="@Icons.Material.Filled.VerifiedUser">
+        <MudText Typo="Typo.h6" Class="mb-4">Verified Contributors</MudText>
+        <MudText Typo="Typo.body2" Class="mb-4">
+            Verified contributors can publish recipes without approval.
+        </MudText>
+
+        @if (loadingContributors)
+        {
+            <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+        }
+        else if (contributors == null || contributors.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info">No verified contributors yet.</MudAlert>
+        }
+        else
+        {
+            <MudTable Items="@contributors" Hover="true" Breakpoint="Breakpoint.Sm" Dense="true">
+                <HeaderContent>
+                    <MudTh>User</MudTh>
+                    <MudTh>Verified At</MudTh>
+                    <MudTh>Verified By</MudTh>
+                    <MudTh>Notes</MudTh>
+                    <MudTh>Actions</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="User">@context.UserName</MudTd>
+                    <MudTd DataLabel="Verified At">@context.VerifiedAt.ToLocalTime().ToString("g")</MudTd>
+                    <MudTd DataLabel="Verified By">@context.VerifiedBy</MudTd>
+                    <MudTd DataLabel="Notes">@(context.Notes ?? "N/A")</MudTd>
+                    <MudTd DataLabel="Actions">
+                        <MudButton Size="Size.Small"
+                                  Variant="Variant.Outlined"
+                                  Color="Color.Error"
+                                  OnClick="@(() => RemoveContributor(context.UserId))">
+                            Remove
+                        </MudButton>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+    </MudTabPanel>
+</MudTabs>
+
+<!-- Submission Details Dialog -->
+<MudDialog @bind-Visible="showSubmissionDialog" Options="dialogOptions">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Recipe Submission Details</MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (selectedSubmission != null)
+        {
+            <MudText Typo="Typo.subtitle1" GutterBottom="true">@selectedSubmission.Data.Name</MudText>
+
+            <MudDivider Class="my-2" />
+
+            <MudGrid>
+                <MudItem xs="6">
+                    <MudText Typo="Typo.caption">Energy</MudText>
+                    <MudText>@selectedSubmission.Data.Energy</MudText>
+                </MudItem>
+                <MudItem xs="6">
+                    <MudText Typo="Typo.caption">Hunger</MudText>
+                    <MudText>@selectedSubmission.Data.Hunger</MudText>
+                </MudItem>
+            </MudGrid>
+
+            @if (!string.IsNullOrEmpty(selectedSubmission.Data.Description))
+            {
+                <MudText Typo="Typo.caption" Class="mt-4">Description</MudText>
+                <MudText>@selectedSubmission.Data.Description</MudText>
+            }
+
+            <MudText Typo="Typo.caption" Class="mt-4">Ingredients</MudText>
+            <MudList T="string" Dense="true">
+                @foreach (var ing in selectedSubmission.Data.Ingredients)
+                {
+                    <MudListItem T="string" Icon="@Icons.Material.Filled.Circle" IconSize="Size.Small">
+                        @ing.Name (@ing.Quantity)
+                    </MudListItem>
+                }
+            </MudList>
+
+            <MudText Typo="Typo.caption" Class="mt-4">FEPs</MudText>
+            <MudChipSet T="string">
+                @foreach (var fep in selectedSubmission.Data.Feps)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Success">
+                        @fep.AttributeName: @fep.BaseValue.ToString("F1")
+                    </MudChip>
+                }
+            </MudChipSet>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => showSubmissionDialog = false)">Close</MudButton>
+        <MudButton Color="Color.Success" OnClick="@(() => ApproveSubmission(selectedSubmission!.Id))">Approve</MudButton>
+        <MudButton Color="Color.Error" OnClick="@(() => RejectSubmission(selectedSubmission!.Id))">Reject</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter]
+    public string TenantId { get; set; } = "";
+
+    private List<FoodSubmissionDto> submissions = new();
+    private List<VerifiedContributorDto> contributors = new();
+
+    private bool loadingSubmissions = true;
+    private bool loadingContributors = true;
+
+    private bool showSubmissionDialog = false;
+    private FoodSubmissionDto? selectedSubmission;
+
+    private DialogOptions dialogOptions = new() { MaxWidth = MaxWidth.Medium, FullWidth = true };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        await Task.WhenAll(LoadSubmissions(), LoadContributors());
+    }
+
+    private async Task LoadSubmissions()
+    {
+        loadingSubmissions = true;
+        try
+        {
+            submissions = await Http.GetFromJsonAsync<List<FoodSubmissionDto>>($"/api/tenants/{TenantId}/food-submissions") ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading submissions: {ex.Message}");
+            Snackbar.Add("Failed to load submissions", Severity.Error);
+        }
+        finally
+        {
+            loadingSubmissions = false;
+        }
+    }
+
+    private async Task LoadContributors()
+    {
+        loadingContributors = true;
+        try
+        {
+            contributors = await Http.GetFromJsonAsync<List<VerifiedContributorDto>>($"/api/tenants/{TenantId}/verified-contributors") ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading contributors: {ex.Message}");
+            Snackbar.Add("Failed to load contributors", Severity.Error);
+        }
+        finally
+        {
+            loadingContributors = false;
+        }
+    }
+
+    private void ViewSubmission(FoodSubmissionDto submission)
+    {
+        selectedSubmission = submission;
+        showSubmissionDialog = true;
+    }
+
+    private async Task ApproveSubmission(int submissionId)
+    {
+        try
+        {
+            var response = await Http.PostAsync($"/api/tenants/{TenantId}/food-submissions/{submissionId}/approve", null);
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Recipe approved successfully!", Severity.Success);
+                showSubmissionDialog = false;
+                await LoadSubmissions();
+            }
+            else
+            {
+                Snackbar.Add("Failed to approve recipe", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error approving submission: {ex.Message}");
+            Snackbar.Add("Error approving recipe", Severity.Error);
+        }
+    }
+
+    private async Task RejectSubmission(int submissionId)
+    {
+        try
+        {
+            var response = await Http.PostAsync($"/api/tenants/{TenantId}/food-submissions/{submissionId}/reject", null);
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Recipe rejected", Severity.Info);
+                showSubmissionDialog = false;
+                await LoadSubmissions();
+            }
+            else
+            {
+                Snackbar.Add("Failed to reject recipe", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error rejecting submission: {ex.Message}");
+            Snackbar.Add("Error rejecting recipe", Severity.Error);
+        }
+    }
+
+    private async Task RemoveContributor(string userId)
+    {
+        try
+        {
+            var response = await Http.DeleteAsync($"/api/tenants/{TenantId}/verified-contributors/{userId}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Contributor removed", Severity.Success);
+                await LoadContributors();
+            }
+            else
+            {
+                Snackbar.Add("Failed to remove contributor", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error removing contributor: {ex.Message}");
+            Snackbar.Add("Error removing contributor", Severity.Error);
+        }
+    }
+}

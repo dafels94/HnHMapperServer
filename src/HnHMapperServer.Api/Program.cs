@@ -65,6 +65,7 @@ else if (!Path.IsPathRooted(gridStorage))
     // Resolve relative GridStorage consistently to solution-level path
     gridStorage = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, "..", gridStorage));
 }
+// SQLite connection string (performance PRAGMAs are set via SqliteConnectionInterceptor)
 var connectionString = $"Data Source={Path.Combine(gridStorage, "grids.db")};Mode=ReadWriteCreate;Cache=Shared;Pooling=True";
 
 builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
@@ -79,6 +80,9 @@ builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
     {
         sqliteOptions.CommandTimeout(30); // 30 second timeout
     });
+
+    // Register SQLite performance interceptor
+    options.AddInterceptors(new SqliteConnectionInterceptor());
 
     // Disable EF Core command logging completely
     options.ConfigureWarnings(warnings =>
@@ -121,8 +125,25 @@ builder.Services.AddScoped<INotificationService, NotificationService>();  // Not
 builder.Services.AddScoped<ITimerService, TimerService>();  // Timer system
 builder.Services.AddScoped<ITimerWarningService, TimerWarningService>();  // Timer warning tracking
 
-// Register memory cache for preview URL signing service
-builder.Services.AddMemoryCache();
+// Cookbook services
+builder.Services.AddScoped<IFoodService, FoodService>();
+builder.Services.AddScoped<IFoodSubmissionService, FoodSubmissionService>();
+builder.Services.AddScoped<IFepCalculatorService, FepCalculatorService>();
+builder.Services.AddScoped<IVerifiedContributorService, VerifiedContributorService>();
+builder.Services.AddScoped<IFoodImportService, FoodImportService>();
+builder.Services.AddScoped<FoodMetricsCalculator>();  // Food metrics calculator (purity, tiers, role scores)
+
+// Register memory cache with size limits to prevent unbounded growth
+builder.Services.AddMemoryCache(options =>
+{
+    // Set size limit to prevent unbounded growth
+    // 100 units = 100 cache entries (each AllFoods_{tenantId} entry is 1 unit)
+    // With ~40 MB per tenant, 100 tenants = ~4 GB max memory usage
+    options.SizeLimit = 100;
+
+    // Compact cache when 90% full (remove 10% of entries)
+    options.CompactionPercentage = 0.1;
+});
 
 // Register HttpClient factory for Discord webhook service
 builder.Services.AddHttpClient();
@@ -168,6 +189,7 @@ builder.Services.AddHostedService<PingCleanupService>(); // Ping cleanup service
 builder.Services.AddHostedService<ZoomTileRebuildService>(); // Zoom tile rebuild service
 builder.Services.AddHostedService<TimerCheckService>(); // Timer monitoring and notification service
 builder.Services.AddHostedService<PreviewCleanupService>(); // Map preview cleanup service (7 day retention)
+builder.Services.AddHostedService<FoodSubmissionCleanupService>(); // Food submission cleanup service (7 day retention)
 
 // Configure shared data protection for cookie sharing with Web
 var dataProtectionPath = Path.Combine(
@@ -732,6 +754,7 @@ app.MapMapAdminEndpoints(); // Map admin endpoints (tenant-scoped map management
 app.MapSuperadminEndpoints(); // Phase 5: Superadmin endpoints (global tenant management)
 app.MapAuditEndpoints(); // Phase 6: Audit log viewer endpoints
 app.MapDatabaseEndpoints();
+app.MapFoodEndpoints(); // Cookbook public API endpoints
 
 // Public version endpoint - returns build information (no authentication required)
 app.MapGet("/version", (IBuildInfoProvider buildInfo) => 

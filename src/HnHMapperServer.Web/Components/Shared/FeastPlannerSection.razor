@@ -1,0 +1,168 @@
+@using HnHMapperServer.Core.DTOs
+@using System.Net.Http.Json
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Navigation
+
+<MudPaper Class="pa-4 mt-4" Elevation="1">
+    <MudStack Spacing="3">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Filled.Restaurant" Size="Size.Medium" />
+            <MudText Typo="Typo.h6">Feast Planner</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Find the most efficient foods for your stat level
+            </MudText>
+        </MudStack>
+
+        <MudGrid>
+            <MudItem xs="12" md="4">
+                <MudNumericField @bind-Value="highestStat"
+                                Label="Your Highest Stat"
+                                Variant="Variant.Outlined"
+                                Min="1"
+                                Max="10000"
+                                HelperText="FEPs needed for +1 stat" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudSelect @bind-Value="targetStat"
+                          Label="Target Stat"
+                          Variant="Variant.Outlined">
+                    <MudSelectItem Value="@("STR")">Strength</MudSelectItem>
+                    <MudSelectItem Value="@("AGI")">Agility</MudSelectItem>
+                    <MudSelectItem Value="@("CON")">Constitution</MudSelectItem>
+                    <MudSelectItem Value="@("INT")">Intelligence</MudSelectItem>
+                    <MudSelectItem Value="@("PER")">Perception</MudSelectItem>
+                    <MudSelectItem Value="@("DEX")">Dexterity</MudSelectItem>
+                    <MudSelectItem Value="@("CHA")">Charisma</MudSelectItem>
+                    <MudSelectItem Value="@("WILL")">Will</MudSelectItem>
+                    <MudSelectItem Value="@("PSY")">Psyche</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="4" Class="d-flex align-end">
+                <MudButton Variant="Variant.Filled"
+                          Color="Color.Primary"
+                          OnClick="Calculate"
+                          Disabled="@loading"
+                          FullWidth="true">
+                    @if (loading)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                    }
+                    Calculate
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+
+        @if (hasSearched && results != null)
+        {
+            <MudDivider Class="my-2" />
+
+            @if (results.Results.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info">
+                    No foods found with @targetStat stat.
+                </MudAlert>
+            }
+            else
+            {
+                <MudText Typo="Typo.subtitle1">
+                    Best foods for +1 @targetStat (when highest stat = @results.HighestStat):
+                </MudText>
+
+                <MudTable Items="@results.Results"
+                         Hover="true"
+                         Dense="true"
+                         Breakpoint="Breakpoint.Sm"
+                         Elevation="0">
+                    <HeaderContent>
+                        <MudTh>Food</MudTh>
+                        <MudTh>Hunger/+1</MudTh>
+                        <MudTh>@targetStat/h</MudTh>
+                        <MudTh>FEPs</MudTh>
+                        <MudTh></MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Food">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                @if (!string.IsNullOrEmpty(context.Food.ResourceType))
+                                {
+                                    <img src="@($"https://www.havenandhearth.com/mt/r/gfx/invobjs/{context.Food.ResourceType}")"
+                                         alt="@context.Food.Name"
+                                         style="width: 24px; height: 24px; image-rendering: pixelated;" />
+                                }
+                                <MudText Typo="Typo.body2"><strong>@context.Food.Name</strong></MudText>
+                                @if (context.Food.HasStatTier2)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning">+2</MudChip>
+                                }
+                            </MudStack>
+                        </MudTd>
+                        <MudTd DataLabel="Hunger/+1">
+                            <MudText Typo="Typo.body2" Color="Color.Primary">
+                                <strong>@context.HungerPerStat.ToString("F0")</strong>
+                            </MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Efficiency">
+                            <MudText Typo="Typo.body2">@context.Food.StatEfficiency.ToString("F1")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="FEPs">
+                            <FoodFepsBar Feps="@context.Food.Feps" Width="120" />
+                        </MudTd>
+                        <MudTd>
+                            <MudButton Size="Size.Small"
+                                      Variant="Variant.Text"
+                                      Color="Color.Primary"
+                                      OnClick="@(() => ViewRecipe(context.Food.Id))">
+                                Details
+                            </MudButton>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        }
+    </MudStack>
+</MudPaper>
+
+@code {
+    private int highestStat = 100;
+    private string targetStat = "STR";
+    private bool loading = false;
+    private bool hasSearched = false;
+    private FeastPlannerResponseDto? results = null;
+
+    private async Task Calculate()
+    {
+        loading = true;
+        hasSearched = true;
+        StateHasChanged();
+
+        try
+        {
+            var http = HttpClientFactory.CreateClient("API");
+            var response = await http.GetAsync($"/api/foods/feast-planner?stat={targetStat}&highestStat={highestStat}&limit=20");
+
+            if (response.IsSuccessStatusCode)
+            {
+                results = await response.Content.ReadFromJsonAsync<FeastPlannerResponseDto>();
+            }
+            else
+            {
+                results = new FeastPlannerResponseDto { Stat = targetStat, HighestStat = highestStat };
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error fetching feast planner results: {ex.Message}");
+            results = new FeastPlannerResponseDto { Stat = targetStat, HighestStat = highestStat };
+        }
+        finally
+        {
+            loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ViewRecipe(int id)
+    {
+        Navigation.NavigateTo($"/cookbook/{id}");
+    }
+}

@@ -1,0 +1,245 @@
+@using HnHMapperServer.Core.DTOs
+@using System.Net.Http.Json
+@using HnHMapperServer.Web.Helpers
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Navigation
+
+<MudExpansionPanel ExpandedChanged="OnExpandedChanged">
+    <TitleContent>
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Style="width: 100%">
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                <MudIcon Icon="@GetStatIcon(Stat)" Size="Size.Medium" />
+                <MudText Typo="Typo.h6">@GetStatName(Stat)</MudText>
+                @if (analysis != null)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Info">@analysis.TotalFoods foods</MudChip>
+                }
+            </MudStack>
+            @if (loading)
+            {
+                <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Small" />
+            }
+            else if (analysis?.TopOverall?.Count > 0)
+            {
+                var championGroup = analysis.TopOverall[0];
+                var champion = championGroup.BestVariant;
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.body2">🥇 <strong>@champion.Name</strong></MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@champion.StatValue.ToString("F1")</MudText>
+                    <MudChip T="string" Size="Size.Small" Color="@FoodHelpers.GetTierColor(champion.Tier)">@champion.Tier</MudChip>
+                </MudStack>
+            }
+        </MudStack>
+    </TitleContent>
+    <ChildContent>
+        @if (loading)
+        {
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" Class="my-4" />
+        }
+        else if (!hasLoaded)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="my-4">Expand to load @GetStatName(Stat) data...</MudText>
+        }
+        else if (analysis == null || analysis.TotalFoods == 0)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="my-4">No foods found with @Stat stat.</MudText>
+        }
+        else
+        {
+            <MudStack Spacing="3" Class="py-3">
+                @* Search Box *@
+                <MudTextField T="string"
+                              Value="@searchTerm"
+                              ValueChanged="OnSearchChanged"
+                              Label="Search foods"
+                              Variant="Variant.Outlined"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search"
+                              Immediate="true"
+                              DebounceInterval="300" />
+
+                @* Tier Distribution Summary *@
+                <MudStack Row="true" Spacing="2">
+                    <MudChip T="string" Color="Color.Success" Size="Size.Small">Best: @analysis.BestTier.Count</MudChip>
+                    <MudChip T="string" Color="Color.Warning" Size="Size.Small">Mid: @analysis.MidTier.Count</MudChip>
+                    <MudChip T="string" Color="Color.Default" Size="Size.Small">Low: @analysis.LowTier.Count</MudChip>
+                </MudStack>
+
+                @* Expansion Panels for Food Groups *@
+                <MudExpansionPanels Elevation="0" Class="seamless-panels">
+                    @foreach (var group in GetFilteredGroups())
+                    {
+                        <FoodGroupPanel Group="@group" OnViewRecipe="ViewRecipe" TargetStat="@Stat" />
+                    }
+                </MudExpansionPanels>
+
+                @* Load More button *@
+                @{
+                    var totalCount = GetTotalGroupCount();
+                    var remaining = totalCount - displayCount;
+                }
+                @if (remaining > 0)
+                {
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Primary"
+                               FullWidth="true"
+                               OnClick="LoadMore"
+                               Class="mt-2">
+                        Load More (@remaining remaining)
+                    </MudButton>
+                }
+            </MudStack>
+        }
+    </ChildContent>
+</MudExpansionPanel>
+
+@code {
+    [Parameter]
+    public string Stat { get; set; } = "STR";
+
+    private StatAnalysisDto? analysis = null;
+    private bool loading = false;
+    private bool hasLoaded = false;
+    private bool isExpanded = false;
+    private string searchTerm = "";
+    private int pageSize = 20;
+    private int displayCount = 20;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Reset state when stat parameter changes
+        if (hasLoaded && analysis?.Stat != Stat)
+        {
+            hasLoaded = false;
+            analysis = null;
+        }
+    }
+
+    private async Task OnExpandedChanged(bool expanded)
+    {
+        isExpanded = expanded;
+
+        // Lazy load: only fetch data when expanded for the first time
+        if (expanded && !hasLoaded && !loading)
+        {
+            await LoadStatAnalysis();
+        }
+    }
+
+    private async Task LoadStatAnalysis()
+    {
+        loading = true;
+        StateHasChanged();
+
+        try
+        {
+            var http = HttpClientFactory.CreateClient("API");
+            var response = await http.GetAsync($"/api/foods/stat-analysis/{Stat}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                analysis = await response.Content.ReadFromJsonAsync<StatAnalysisDto>();
+                hasLoaded = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading stat analysis for {Stat}: {ex.Message}");
+            analysis = new StatAnalysisDto { Stat = Stat };
+        }
+        finally
+        {
+            loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private List<GroupedFoodDto> GetFilteredGroups()
+    {
+        if (analysis == null) return new List<GroupedFoodDto>();
+
+        // Combine all grouped tiers (BestTier, MidTier, LowTier are already List<GroupedFoodDto>)
+        var allGroups = analysis.BestTier
+            .Concat(analysis.MidTier)
+            .Concat(analysis.LowTier)
+            .ToList();
+
+        // Apply search filter to group names
+        if (!string.IsNullOrWhiteSpace(searchTerm))
+        {
+            var term = searchTerm.ToLower();
+            allGroups = allGroups.Where(g => g.FoodName.ToLower().Contains(term)).ToList();
+        }
+
+        // Return paginated results to prevent rendering too many panels at once
+        return allGroups.Take(displayCount).ToList();
+    }
+
+    private int GetTotalGroupCount()
+    {
+        if (analysis == null) return 0;
+
+        var allGroups = analysis.BestTier
+            .Concat(analysis.MidTier)
+            .Concat(analysis.LowTier);
+
+        if (!string.IsNullOrWhiteSpace(searchTerm))
+        {
+            var term = searchTerm.ToLower();
+            return allGroups.Count(g => g.FoodName.ToLower().Contains(term));
+        }
+
+        return allGroups.Count();
+    }
+
+    private void LoadMore()
+    {
+        displayCount += pageSize;
+    }
+
+    private void OnSearchChanged(string value)
+    {
+        searchTerm = value;
+        displayCount = pageSize; // Reset pagination when search changes
+    }
+
+    private void ViewRecipe(int id)
+    {
+        Navigation.NavigateTo($"/cookbook/{id}");
+    }
+
+    private string GetStatName(string stat)
+    {
+        return stat.ToUpper() switch
+        {
+            "STR" => "Strength",
+            "AGI" => "Agility",
+            "CON" => "Constitution",
+            "INT" => "Intelligence",
+            "CHA" => "Charisma",
+            "DEX" => "Dexterity",
+            "WILL" => "Will",
+            "PSY" => "Psyche",
+            "PER" => "Perception",
+            _ => stat
+        };
+    }
+
+    private string GetStatIcon(string stat)
+    {
+        return stat.ToUpper() switch
+        {
+            "STR" => Icons.Material.Filled.FitnessCenter,
+            "AGI" => Icons.Material.Filled.DirectionsRun,
+            "CON" => Icons.Material.Filled.Favorite,
+            "INT" => Icons.Material.Filled.Psychology,
+            "CHA" => Icons.Material.Filled.EmojiEmotions,
+            "DEX" => Icons.Material.Filled.PanTool,
+            "WILL" => Icons.Material.Filled.Shield,
+            "PSY" => Icons.Material.Filled.AutoAwesome,
+            "PER" => Icons.Material.Filled.Visibility,
+            _ => Icons.Material.Filled.Circle
+        };
+    }
+
+}

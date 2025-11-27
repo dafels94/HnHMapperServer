@@ -19,10 +19,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HnHMapperServer.AppHost", "
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HnHMapperServer.ServiceDefaults", "src\HnHMapperServer.ServiceDefaults\HnHMapperServer.ServiceDefaults.csproj", "{D6809802-F560-4177-AFE0-50A6F0C50511}"
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HnHMapperServer.Tests", "tests\HnHMapperServer.Tests\HnHMapperServer.Tests.csproj", "{C39EE60A-C628-4242-A457-BEE58025E674}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -117,18 +113,6 @@ Global
 		{D6809802-F560-4177-AFE0-50A6F0C50511}.Release|x64.Build.0 = Release|Any CPU
 		{D6809802-F560-4177-AFE0-50A6F0C50511}.Release|x86.ActiveCfg = Release|Any CPU
 		{D6809802-F560-4177-AFE0-50A6F0C50511}.Release|x86.Build.0 = Release|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Debug|x64.Build.0 = Debug|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Debug|x86.Build.0 = Debug|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Release|Any CPU.Build.0 = Release|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Release|x64.ActiveCfg = Release|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Release|x64.Build.0 = Release|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Release|x86.ActiveCfg = Release|Any CPU
-		{C39EE60A-C628-4242-A457-BEE58025E674}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -141,6 +125,8 @@ Global
 		{3DD8E232-1E7C-44C4-882B-80A2321619E2} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{8AE652CE-35BE-4A0A-B03D-CC6A51EFEFE7} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{D6809802-F560-4177-AFE0-50A6F0C50511} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
-		{C39EE60A-C628-4242-A457-BEE58025E674} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {214B1031-E1C3-4F78-801D-7C847EBF189B}
 	EndGlobalSection
 EndGlobal

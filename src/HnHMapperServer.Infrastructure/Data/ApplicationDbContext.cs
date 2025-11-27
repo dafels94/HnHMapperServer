@@ -63,6 +63,13 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
     public DbSet<NotificationPreferenceEntity> NotificationPreferences => Set<NotificationPreferenceEntity>();
     public DbSet<TimerHistoryEntity> TimerHistory => Set<TimerHistoryEntity>();
 
+    // Cookbook tables
+    public DbSet<FoodEntity> Foods => Set<FoodEntity>();
+    public DbSet<FoodIngredientEntity> FoodIngredients => Set<FoodIngredientEntity>();
+    public DbSet<FoodFepEntity> FoodFeps => Set<FoodFepEntity>();
+    public DbSet<FoodSubmissionEntity> FoodSubmissions => Set<FoodSubmissionEntity>();
+    public DbSet<VerifiedContributorEntity> VerifiedContributors => Set<VerifiedContributorEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -574,6 +581,160 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        // Cookbook entity configurations
+        modelBuilder.Entity<FoodEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.ResourceType).HasMaxLength(256).IsRequired(false);
+            entity.Property(e => e.Energy).IsRequired();
+            entity.Property(e => e.Hunger).IsRequired();
+            entity.Property(e => e.Description).HasMaxLength(2000).IsRequired(false);
+            entity.Property(e => e.IsSmoked).IsRequired().HasDefaultValue(false);
+            entity.Property(e => e.SubmittedBy).IsRequired();
+            entity.Property(e => e.CreatedAt).IsRequired();
+            entity.Property(e => e.ApprovedBy).IsRequired(false);
+            entity.Property(e => e.ApprovedAt).IsRequired(false);
+            entity.Property(e => e.IsVerified).IsRequired().HasDefaultValue(false);
+            entity.Property(e => e.TenantId).IsRequired(false); // NULL for global recipes
+
+            // Indexes for efficient queries
+            entity.HasIndex(e => e.TenantId);
+            entity.HasIndex(e => e.Name);
+            entity.HasIndex(e => e.ResourceType);
+            entity.HasIndex(e => e.IsVerified);
+            entity.HasIndex(e => new { e.TenantId, e.Name });
+            entity.HasIndex(e => e.CreatedAt);
+
+            // Composite index for tenant-scoped queries with sorting (performance optimization)
+            entity.HasIndex(e => new { e.TenantId, e.CreatedAt })
+                .HasDatabaseName("IX_Foods_TenantId_CreatedAt");
+
+            // Foreign key to Tenants (nullable for global recipes)
+            entity.HasOne<TenantEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.TenantId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .IsRequired(false);
+
+            // Foreign key to AspNetUsers (SubmittedBy)
+            entity.HasOne<IdentityUser>()
+                .WithMany()
+                .HasForeignKey(e => e.SubmittedBy)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<FoodIngredientEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.FoodId).IsRequired();
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.Quantity).IsRequired().HasPrecision(18, 4);
+            entity.Property(e => e.Quality).IsRequired(false);
+
+            // Index for efficient queries
+            entity.HasIndex(e => e.FoodId);
+            entity.HasIndex(e => e.Name);
+
+            // Foreign key to Foods with cascade delete
+            entity.HasOne(i => i.Food)
+                .WithMany(f => f.Ingredients)
+                .HasForeignKey(i => i.FoodId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<FoodFepEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.FoodId).IsRequired();
+            entity.Property(e => e.AttributeName).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.BaseValue).IsRequired().HasPrecision(18, 4);
+
+            // Index for efficient queries
+            entity.HasIndex(e => e.FoodId);
+            entity.HasIndex(e => e.AttributeName);
+
+            // Composite covering index for stat-based queries (performance optimization)
+            // This allows SQLite to efficiently find foods by stat using index-only scans
+            entity.HasIndex(e => new { e.AttributeName, e.FoodId, e.BaseValue })
+                .HasDatabaseName("IX_FoodFeps_AttributeName_FoodId_BaseValue");
+
+            // Foreign key to Foods with cascade delete
+            entity.HasOne(f => f.Food)
+                .WithMany(fo => fo.Feps)
+                .HasForeignKey(f => f.FoodId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<FoodSubmissionEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.TenantId).IsRequired(false);
+            entity.Property(e => e.SubmittedBy).IsRequired();
+            entity.Property(e => e.SubmittedAt).IsRequired();
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(50).HasDefaultValue("Pending");
+            entity.Property(e => e.DataJson).IsRequired();
+            entity.Property(e => e.ReviewedBy).IsRequired(false);
+            entity.Property(e => e.ReviewedAt).IsRequired(false);
+            entity.Property(e => e.ReviewNotes).HasMaxLength(1000).IsRequired(false);
+            entity.Property(e => e.ApprovedFoodId).IsRequired(false);
+
+            // Indexes for efficient queries
+            entity.HasIndex(e => e.TenantId);
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.SubmittedBy);
+            entity.HasIndex(e => new { e.TenantId, e.Status });
+            entity.HasIndex(e => e.SubmittedAt);
+
+            // Foreign key to Tenants (nullable for global submission requests)
+            entity.HasOne<TenantEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.TenantId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .IsRequired(false);
+
+            // Foreign key to AspNetUsers (SubmittedBy)
+            entity.HasOne<IdentityUser>()
+                .WithMany()
+                .HasForeignKey(e => e.SubmittedBy)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<VerifiedContributorEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.TenantId).IsRequired();
+            entity.Property(e => e.UserId).IsRequired();
+            entity.Property(e => e.VerifiedAt).IsRequired();
+            entity.Property(e => e.VerifiedBy).IsRequired();
+            entity.Property(e => e.Notes).HasMaxLength(500).IsRequired(false);
+
+            // Unique constraint: one verification per user per tenant
+            entity.HasIndex(e => new { e.TenantId, e.UserId }).IsUnique();
+
+            // Indexes for efficient queries
+            entity.HasIndex(e => e.TenantId);
+            entity.HasIndex(e => e.UserId);
+
+            // Foreign key to Tenants
+            entity.HasOne<TenantEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.TenantId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Foreign key to AspNetUsers (UserId)
+            entity.HasOne<IdentityUser>()
+                .WithMany()
+                .HasForeignKey(e => e.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Foreign key to AspNetUsers (VerifiedBy)
+            entity.HasOne<IdentityUser>()
+                .WithMany()
+                .HasForeignKey(e => e.VerifiedBy)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
         // Global query filters for automatic tenant isolation
         // These filters automatically add "WHERE TenantId = {currentTenantId}" to all queries
         // GetCurrentTenantId() is evaluated at query time (not model creation time)
@@ -610,6 +771,19 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
 
         modelBuilder.Entity<TimerHistoryEntity>()
             .HasQueryFilter(t => t.TenantId == GetCurrentTenantId());
+
+        // Cookbook query filters - hybrid tenancy (global + tenant-specific)
+        // Foods: Show global recipes (TenantId IS NULL) OR tenant-specific recipes
+        modelBuilder.Entity<FoodEntity>()
+            .HasQueryFilter(f => f.TenantId == null || f.TenantId == GetCurrentTenantId());
+
+        // FoodSubmissions: Show only submissions for current tenant or global requests
+        modelBuilder.Entity<FoodSubmissionEntity>()
+            .HasQueryFilter(s => s.TenantId == null || s.TenantId == GetCurrentTenantId());
+
+        // VerifiedContributors: Show only verified contributors in current tenant
+        modelBuilder.Entity<VerifiedContributorEntity>()
+            .HasQueryFilter(v => v.TenantId == GetCurrentTenantId());
     }
 }
 

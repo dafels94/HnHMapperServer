@@ -64,6 +64,25 @@ public static class TenantAdminEndpoints
 
         // POST /api/tenants/{tenantId}/discord-test - Test Discord webhook
         group.MapPost("/discord-test", TestDiscordWebhook);
+
+        // Cookbook endpoints
+        // GET /api/tenants/{tenantId}/food-submissions - List pending food submissions
+        group.MapGet("/food-submissions", GetPendingFoodSubmissions);
+
+        // POST /api/tenants/{tenantId}/food-submissions/{submissionId}/approve - Approve food submission
+        group.MapPost("/food-submissions/{submissionId:int}/approve", ApproveFoodSubmission);
+
+        // POST /api/tenants/{tenantId}/food-submissions/{submissionId}/reject - Reject food submission
+        group.MapPost("/food-submissions/{submissionId:int}/reject", RejectFoodSubmission);
+
+        // GET /api/tenants/{tenantId}/verified-contributors - List verified contributors
+        group.MapGet("/verified-contributors", GetVerifiedContributors);
+
+        // POST /api/tenants/{tenantId}/verified-contributors/{userId} - Add verified contributor
+        group.MapPost("/verified-contributors/{userId}", AddVerifiedContributor);
+
+        // DELETE /api/tenants/{tenantId}/verified-contributors/{userId} - Remove verified contributor
+        group.MapDelete("/verified-contributors/{userId}", RemoveVerifiedContributor);
     }
 
     /// <summary>
@@ -980,5 +999,241 @@ public static class TenantAdminEndpoints
     public sealed class ResetUserPasswordDto
     {
         public string NewPassword { get; set; } = string.Empty;
+    }
+
+    // ============================================
+    // Cookbook Admin Endpoints
+    // ============================================
+
+    /// <summary>
+    /// GET /api/tenants/{tenantId}/food-submissions
+    /// List pending food submissions for the tenant
+    /// </summary>
+    private static async Task<IResult> GetPendingFoodSubmissions(
+        string tenantId,
+        HttpContext context,
+        IFoodSubmissionService foodSubmissionService)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var userTenantId = context.User.Claims.FirstOrDefault(c => c.Type == "TenantId")?.Value;
+            if (userTenantId != tenantId)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        var submissions = await foodSubmissionService.GetPendingSubmissionsAsync();
+        return Results.Ok(submissions);
+    }
+
+    /// <summary>
+    /// POST /api/tenants/{tenantId}/food-submissions/{submissionId}/approve
+    /// Approve a food submission (creates food)
+    /// </summary>
+    private static async Task<IResult> ApproveFoodSubmission(
+        string tenantId,
+        int submissionId,
+        HttpContext context,
+        IFoodSubmissionService foodSubmissionService,
+        IAuditService auditService)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var userTenantId = context.User.Claims.FirstOrDefault(c => c.Type == "TenantId")?.Value;
+            if (userTenantId != tenantId)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        var userId = context.User.FindFirst("sub")?.Value
+                     ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+        if (userId == null)
+            return Results.Unauthorized();
+
+        var food = await foodSubmissionService.ApproveSubmissionAsync(submissionId, userId, null);
+
+        if (food == null)
+            return Results.NotFound();
+
+        // Log audit event
+        await auditService.LogAsync(new HnHMapperServer.Core.DTOs.AuditEntry
+        {
+            UserId = userId,
+            Action = "FoodSubmissionApproved",
+            EntityType = "FoodSubmission",
+            EntityId = submissionId.ToString(),
+            NewValue = food.Id.ToString()
+        });
+
+        return Results.Ok(food);
+    }
+
+    /// <summary>
+    /// POST /api/tenants/{tenantId}/food-submissions/{submissionId}/reject
+    /// Reject a food submission
+    /// </summary>
+    private static async Task<IResult> RejectFoodSubmission(
+        string tenantId,
+        int submissionId,
+        HttpContext context,
+        IFoodSubmissionService foodSubmissionService,
+        IAuditService auditService)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var userTenantId = context.User.Claims.FirstOrDefault(c => c.Type == "TenantId")?.Value;
+            if (userTenantId != tenantId)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        var userId = context.User.FindFirst("sub")?.Value
+                     ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+        if (userId == null)
+            return Results.Unauthorized();
+
+        var success = await foodSubmissionService.RejectSubmissionAsync(submissionId, userId, null);
+
+        if (!success)
+            return Results.NotFound();
+
+        // Log audit event
+        await auditService.LogAsync(new HnHMapperServer.Core.DTOs.AuditEntry
+        {
+            UserId = userId,
+            Action = "FoodSubmissionRejected",
+            EntityType = "FoodSubmission",
+            EntityId = submissionId.ToString()
+        });
+
+        return Results.Ok();
+    }
+
+    /// <summary>
+    /// GET /api/tenants/{tenantId}/verified-contributors
+    /// List verified contributors in the tenant
+    /// </summary>
+    private static async Task<IResult> GetVerifiedContributors(
+        string tenantId,
+        HttpContext context,
+        IVerifiedContributorService verifiedContributorService)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var userTenantId = context.User.Claims.FirstOrDefault(c => c.Type == "TenantId")?.Value;
+            if (userTenantId != tenantId)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        var contributors = await verifiedContributorService.GetAllVerifiedContributorsAsync();
+        return Results.Ok(contributors);
+    }
+
+    /// <summary>
+    /// POST /api/tenants/{tenantId}/verified-contributors/{userId}
+    /// Add a verified contributor
+    /// </summary>
+    private static async Task<IResult> AddVerifiedContributor(
+        string tenantId,
+        string userId,
+        HttpContext context,
+        IVerifiedContributorService verifiedContributorService,
+        IAuditService auditService)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var userTenantId = context.User.Claims.FirstOrDefault(c => c.Type == "TenantId")?.Value;
+            if (userTenantId != tenantId)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        var adminUserId = context.User.FindFirst("sub")?.Value
+                          ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+        if (adminUserId == null)
+            return Results.Unauthorized();
+
+        try
+        {
+            var contributor = await verifiedContributorService.AddVerifiedContributorAsync(
+                userId,
+                adminUserId,
+                null);
+
+            // Log audit event
+            await auditService.LogAsync(new HnHMapperServer.Core.DTOs.AuditEntry
+            {
+                UserId = adminUserId,
+                Action = "VerifiedContributorAdded",
+                EntityType = "VerifiedContributor",
+                EntityId = contributor.Id.ToString(),
+                NewValue = userId
+            });
+
+            return Results.Ok(contributor);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// DELETE /api/tenants/{tenantId}/verified-contributors/{userId}
+    /// Remove a verified contributor
+    /// </summary>
+    private static async Task<IResult> RemoveVerifiedContributor(
+        string tenantId,
+        string userId,
+        HttpContext context,
+        IVerifiedContributorService verifiedContributorService,
+        IAuditService auditService)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var userTenantId = context.User.Claims.FirstOrDefault(c => c.Type == "TenantId")?.Value;
+            if (userTenantId != tenantId)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        var adminUserId = context.User.FindFirst("sub")?.Value
+                          ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+        if (adminUserId == null)
+            return Results.Unauthorized();
+
+        var success = await verifiedContributorService.RemoveVerifiedContributorAsync(userId);
+
+        if (!success)
+            return Results.NotFound();
+
+        // Log audit event
+        await auditService.LogAsync(new HnHMapperServer.Core.DTOs.AuditEntry
+        {
+            UserId = adminUserId,
+            Action = "VerifiedContributorRemoved",
+            EntityType = "VerifiedContributor",
+            EntityId = userId,
+            OldValue = userId
+        });
+
+        return Results.Ok();
     }
 }

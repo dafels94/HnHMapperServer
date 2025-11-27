@@ -1,0 +1,75 @@
+@using HnHMapperServer.Core.DTOs
+
+@* Food Purity Display Component
+   Displays the three-bar purity visualization:
+   - Fighter Purity (STR/AGI/CON)
+   - Crafter Purity (PSY/DEX/WILL)
+   - Universal Purity (INT/PER)
+   Plus optional CHA trash warning
+*@
+
+<MudStack Spacing="0">
+    @* Fighter Purity *@
+    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+        <MudIcon Icon="@Icons.Material.Filled.Shield" Size="Size.Small" Color="Color.Error" />
+        <MudProgressLinear Color="Color.Error"
+                          Value="@((double)(Food.FighterPurity * 100))"
+                          Size="Size.Small"
+                          Rounded="true"
+                          Style="@($"width: {BarWidth}")" />
+        <MudText Typo="Typo.caption">@((Food.FighterPurity * 100).ToString("F0"))%</MudText>
+    </MudStack>
+
+    @* Crafter Purity *@
+    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+        <MudIcon Icon="@Icons.Material.Filled.Construction" Size="Size.Small" Color="Color.Info" />
+        <MudProgressLinear Color="Color.Info"
+                          Value="@((double)(Food.CrafterPurity * 100))"
+                          Size="Size.Small"
+                          Rounded="true"
+                          Style="@($"width: {BarWidth}")" />
+        <MudText Typo="Typo.caption">@((Food.CrafterPurity * 100).ToString("F0"))%</MudText>
+    </MudStack>
+
+    @* Universal Purity *@
+    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+        <MudIcon Icon="@Icons.Material.Filled.AutoAwesome" Size="Size.Small" Color="Color.Success" />
+        <MudProgressLinear Color="Color.Success"
+                          Value="@((double)(Food.UniversalPurity * 100))"
+                          Size="Size.Small"
+                          Rounded="true"
+                          Style="@($"width: {BarWidth}")" />
+        <MudText Typo="Typo.caption">@((Food.UniversalPurity * 100).ToString("F0"))%</MudText>
+    </MudStack>
+
+    @* CHA Trash Warning *@
+    @if (ShowChaWarning && Food.ChaTrash > 0)
+    {
+        <MudTooltip Text="@($"Contains {Food.ChaTrash:F1} CHA (trash)")">
+            <MudIcon Icon="@Icons.Material.Filled.Warning" Size="Size.Small" Color="Color.Warning" />
+        </MudTooltip>
+    }
+</MudStack>
+
+@code {
+    /// <summary>
+    /// Food DTO containing purity data (FighterPurity, CrafterPurity, UniversalPurity, ChaTrash).
+    /// </summary>
+    [Parameter]
+    [EditorRequired]
+    public FoodDto Food { get; set; } = default!;
+
+    /// <summary>
+    /// Whether to show the CHA trash warning icon when ChaTrash > 0.
+    /// Default: true
+    /// </summary>
+    [Parameter]
+    public bool ShowChaWarning { get; set; } = true;
+
+    /// <summary>
+    /// Width of the progress bars (CSS value).
+    /// Default: "60px"
+    /// </summary>
+    [Parameter]
+    public string BarWidth { get; set; } = "60px";
+}

@@ -93,6 +93,11 @@ public static class SuperadminEndpoints
         // GET /api/superadmin/tenants/{tenantId}/custom-markers - Custom markers for specific tenant
         group.MapGet("/tenants/{tenantId}/custom-markers", GetTenantCustomMarkers);
 
+        // === Food Database Management ===
+
+        // POST /api/superadmin/foods/import - Import foods from JSON file
+        group.MapPost("/foods/import", ImportFoods);
+
         // GET /api/superadmin/tenants/{tenantId}/statistics - Enhanced tenant statistics
         group.MapGet("/tenants/{tenantId}/statistics", GetTenantStatistics);
 
@@ -1612,6 +1617,58 @@ public static class SuperadminEndpoints
         {
             logger.LogError(ex, "Error loading custom markers for tenant {TenantId}", tenantId);
             return Results.Problem("Failed to load custom markers");
+        }
+    }
+
+    // ============================
+    // Food Database Management
+    // ============================
+
+    private static async Task<IResult> ImportFoods(
+        HttpContext context,
+        IFoodImportService foodImportService,
+        ILogger<Program> logger)
+    {
+        try
+        {
+            // Check if request has a file upload
+            if (context.Request.HasFormContentType && context.Request.Form.Files.Count > 0)
+            {
+                var file = context.Request.Form.Files[0];
+                using var stream = file.OpenReadStream();
+                using var reader = new StreamReader(stream);
+                var jsonContent = await reader.ReadToEndAsync();
+
+                logger.LogInformation("Importing foods from uploaded file: {FileName} ({Length} bytes)",
+                    file.FileName, file.Length);
+
+                var result = await foodImportService.ImportFromJsonContentAsync(jsonContent);
+                return Results.Ok(result);
+            }
+
+            // Otherwise, read from default path
+            var defaultPath = Path.Combine("C:", "Users", "AAAAAAAAAA", "Documents", "haven", "map", "tools", "food-info2.json");
+            if (!File.Exists(defaultPath))
+            {
+                return Results.BadRequest(new
+                {
+                    error = "No file uploaded and default file not found",
+                    defaultPath
+                });
+            }
+
+            logger.LogInformation("Importing foods from default path: {Path}", defaultPath);
+            var importResult = await foodImportService.ImportFromJsonFileAsync(defaultPath);
+            return Results.Ok(importResult);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error importing foods");
+            return Results.Problem(
+                title: "Import failed",
+                detail: ex.Message,
+                statusCode: 500
+            );
         }
     }
 }

@@ -1,0 +1,35 @@
+@* Food Rank Badge Component
+   Displays a ranking indicator with medals for top 3 positions:
+   - 1st place: 🥇
+   - 2nd place: 🥈
+   - 3rd place: 🥉
+   - 4th and beyond: #4, #5, etc.
+*@
+
+<MudText Typo="Typo.body2">
+    @if (Rank == 1)
+    {
+        <span>🥇</span>
+    }
+    else if (Rank == 2)
+    {
+        <span>🥈</span>
+    }
+    else if (Rank == 3)
+    {
+        <span>🥉</span>
+    }
+    else
+    {
+        <span>#@Rank</span>
+    }
+</MudText>
+
+@code {
+    /// <summary>
+    /// Rank number (1-based index).
+    /// </summary>
+    [Parameter]
+    [EditorRequired]
+    public int Rank { get; set; }
+}

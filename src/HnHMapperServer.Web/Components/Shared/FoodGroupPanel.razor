@@ -1,0 +1,213 @@
+@using HnHMapperServer.Core.DTOs
+@using HnHMapperServer.Web.Helpers
+
+<MudExpansionPanel>
+    <TitleContent>
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Style="width: 100%">
+            @if (!string.IsNullOrEmpty(Group.BestVariant.ResourceType))
+            {
+                <img src="@($"https://www.havenandhearth.com/mt/r/gfx/invobjs/{Group.BestVariant.ResourceType}")"
+                     alt="@Group.FoodName"
+                     style="width: 32px; height: 32px; image-rendering: pixelated;" />
+            }
+            <MudText Typo="Typo.body1"><strong>@Group.FoodName</strong></MudText>
+            <MudChip T="string" Size="Size.Small" Color="Color.Default">
+                @Group.VariantCount variant@(Group.VariantCount > 1 ? "s" : "")
+            </MudChip>
+            <MudSpacer />
+            @if (!string.IsNullOrEmpty(TargetStat))
+            {
+                @* Stat Research Mode: Show best efficiency (stat per hunger) *@
+                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Best: @Group.BestVariant.StatEfficiency.ToString("F1")/h
+                    </MudText>
+                    @if (Group.BestVariant.HasStatTier2)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Warning">+2</MudChip>
+                    }
+                </MudStack>
+            }
+            else
+            {
+                @* Cookbook Mode: Show efficiency *@
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Best: @FoodHelpers.CalculateTierAdjustedEfficiency(Group.BestVariant).ToString("F1") efficiency
+                </MudText>
+            }
+        </MudStack>
+    </TitleContent>
+    <ChildContent>
+        <MudStack Spacing="2" Class="pa-3">
+            @* Sort Selector *@
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Sort by:</MudText>
+                <MudSelect @bind-Value="selectedSort"
+                          Variant="Variant.Outlined"
+                          Dense="true"
+                          Style="max-width: 200px;">
+                    @if (!string.IsNullOrEmpty(TargetStat))
+                    {
+                        <MudSelectItem Value="@("StatEfficiency")">Efficiency (@TargetStat/hunger)</MudSelectItem>
+                        <MudSelectItem Value="@("Concentration")">Concentration</MudSelectItem>
+                        <MudSelectItem Value="@("HungerLow")">Hunger (low first)</MudSelectItem>
+                        <MudSelectItem Value="@("HungerHigh")">Hunger (high first)</MudSelectItem>
+                    }
+                    else
+                    {
+                        <MudSelectItem Value="@("Efficiency")">Efficiency</MudSelectItem>
+                        <MudSelectItem Value="@("Purity")">Purity</MudSelectItem>
+                        <MudSelectItem Value="@("Total")">Total FEPs</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudStack>
+
+            @* Variants Table *@
+            <MudTable Items="@GetSortedVariants()"
+                      Hover="true"
+                      Dense="true"
+                      Breakpoint="Breakpoint.Sm"
+                      Elevation="0">
+                <HeaderContent>
+                    @if (!string.IsNullOrEmpty(TargetStat))
+                    {
+                        @* Stat Research Mode Headers *@
+                        <MudTh>@TargetStat/h</MudTh>
+                        <MudTh>Conc</MudTh>
+                        <MudTh>Hunger</MudTh>
+                        <MudTh>FEPs</MudTh>
+                        <MudTh></MudTh>
+                    }
+                    else
+                    {
+                        @* Cookbook Mode Headers *@
+                        <MudTh>Efficiency</MudTh>
+                        <MudTh>FEPs</MudTh>
+                        <MudTh>Total</MudTh>
+                        <MudTh>Ingredients</MudTh>
+                        <MudTh>Purity</MudTh>
+                        <MudTh></MudTh>
+                    }
+                </HeaderContent>
+                <RowTemplate>
+                    @if (!string.IsNullOrEmpty(TargetStat))
+                    {
+                        @* Stat Research Mode Row *@
+                        <MudTd DataLabel="@($"{TargetStat}/h")">
+                            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                <MudText Typo="Typo.body2"><strong>@context.StatEfficiency.ToString("F1")</strong></MudText>
+                                @if (context.HasStatTier2)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning">+2</MudChip>
+                                }
+                            </MudStack>
+                        </MudTd>
+                        <MudTd DataLabel="Conc">
+                            <MudText Typo="Typo.body2">@((context.StatConcentration * 100).ToString("F0"))%</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Hunger">
+                            <MudText Typo="Typo.body2">@context.Hunger</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="FEPs">
+                            <FoodFepsBar Feps="@context.Feps" Width="150" />
+                        </MudTd>
+                        <MudTd>
+                            <MudButton Size="Size.Small"
+                                       Variant="Variant.Outlined"
+                                       Color="Color.Primary"
+                                       OnClick="@(() => OnViewRecipe.InvokeAsync(context.Id))">
+                                Details
+                            </MudButton>
+                        </MudTd>
+                    }
+                    else
+                    {
+                        @* Cookbook Mode Row *@
+                        <MudTd DataLabel="Efficiency">
+                            <FoodEfficiencyCell Food="@context" ShowDominantStat="true" />
+                        </MudTd>
+                        <MudTd DataLabel="FEPs">
+                            <FoodFepsBar Feps="@context.Feps" Width="200" />
+                        </MudTd>
+                        <MudTd DataLabel="Total">
+                            <MudText Typo="Typo.body2"><strong>@context.TotalFep.ToString("F0")</strong></MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Ingredients">
+                            <MudText Typo="Typo.body2">
+                                @GetIngredientsText(context)
+                            </MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Purity">
+                            <FoodPurityDisplay Food="@context" BarWidth="60px" ShowChaWarning="true" />
+                        </MudTd>
+                        <MudTd>
+                            <MudButton Size="Size.Small"
+                                       Variant="Variant.Outlined"
+                                       Color="Color.Primary"
+                                       OnClick="@(() => OnViewRecipe.InvokeAsync(context.Id))">
+                                Details
+                            </MudButton>
+                        </MudTd>
+                    }
+                </RowTemplate>
+            </MudTable>
+        </MudStack>
+    </ChildContent>
+</MudExpansionPanel>
+
+@code {
+    [Parameter]
+    [EditorRequired]
+    public GroupedFoodDto Group { get; set; } = default!;
+
+    [Parameter]
+    public EventCallback<int> OnViewRecipe { get; set; }
+
+    [Parameter]
+    public bool IsInitiallyExpanded { get; set; } = false;
+
+    /// <summary>
+    /// When set, switches to stat research mode with stat-specific columns and sorting
+    /// </summary>
+    [Parameter]
+    public string? TargetStat { get; set; }
+
+    private string selectedSort = "";
+
+    protected override void OnParametersSet()
+    {
+        // Set default sort based on mode
+        if (string.IsNullOrEmpty(selectedSort))
+        {
+            selectedSort = !string.IsNullOrEmpty(TargetStat) ? "StatEfficiency" : "Efficiency";
+        }
+    }
+
+    private IEnumerable<FoodDto> GetSortedVariants()
+    {
+        if (Group?.AllVariants == null)
+            return Enumerable.Empty<FoodDto>();
+
+        return selectedSort switch
+        {
+            // Stat Research Mode sorts
+            "StatEfficiency" => Group.AllVariants.OrderByDescending(f => f.StatEfficiency),
+            "Concentration" => Group.AllVariants.OrderByDescending(f => f.StatConcentration),
+            "HungerLow" => Group.AllVariants.OrderBy(f => f.Hunger),
+            "HungerHigh" => Group.AllVariants.OrderByDescending(f => f.Hunger),
+            // Cookbook Mode sorts
+            "Efficiency" => Group.AllVariants.OrderByDescending(f => FoodHelpers.CalculateTierAdjustedEfficiency(f)),
+            "Purity" => Group.AllVariants.OrderByDescending(f => f.Purity),
+            "Total" => Group.AllVariants.OrderByDescending(f => f.TotalFep),
+            _ => Group.AllVariants
+        };
+    }
+
+    private string GetIngredientsText(FoodDto food)
+    {
+        var ingredients = food.Ingredients
+            .OrderByDescending(i => i.Quality ?? 0)
+            .Select(i => i.Quality.HasValue ? $"{i.Name} Q{i.Quality}" : i.Name);
+        return string.Join(", ", ingredients);
+    }
+}
