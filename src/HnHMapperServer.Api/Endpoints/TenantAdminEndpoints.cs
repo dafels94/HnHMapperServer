@@ -5,7 +5,9 @@ using HnHMapperServer.Core.Constants;
 using HnHMapperServer.Core.Interfaces;
 using HnHMapperServer.Infrastructure.Data;
 using HnHMapperServer.Services.Interfaces;
+using HnHMapperServer.Services.Services;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace HnHMapperServer.Api.Endpoints;
@@ -64,6 +66,14 @@ public static class TenantAdminEndpoints
 
         // POST /api/tenants/{tenantId}/discord-test - Test Discord webhook
         group.MapPost("/discord-test", TestDiscordWebhook);
+
+        // POST /api/tenants/{tenantId}/maps/import - Import .hmap file (large files up to 1GB)
+        group.MapPost("/maps/import", ImportHmapFile)
+            .DisableAntiforgery()
+            .WithMetadata(new Microsoft.AspNetCore.Mvc.DisableRequestSizeLimitAttribute());
+
+        // GET /api/tenants/{tenantId}/maps/import/status - Get import status
+        group.MapGet("/maps/import/status", GetImportStatus);
     }
 
     /// <summary>
@@ -947,6 +957,313 @@ public static class TenantAdminEndpoints
         else
         {
             return Results.BadRequest(new { error = "Failed to send test notification. Please check your webhook URL and try again." });
+        }
+    }
+
+    /// <summary>
+    /// GET /api/tenants/{tenantId}/maps/import/status
+    /// Gets the current import status for the tenant.
+    /// </summary>
+    private static IResult GetImportStatus(
+        string tenantId,
+        ImportLockService lockService,
+        HttpContext context)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var currentTenantId = context.User.FindFirst("TenantId")?.Value;
+            if (currentTenantId != tenantId)
+            {
+                return Results.Forbid();
+            }
+        }
+
+        var status = lockService.GetStatus(tenantId);
+        return Results.Ok(new
+        {
+            isImporting = status.IsImporting,
+            canImport = status.CanImport,
+            cooldownSeconds = status.CooldownRemaining?.TotalSeconds ?? 0
+        });
+    }
+
+    /// <summary>
+    /// POST /api/tenants/{tenantId}/maps/import
+    /// Imports an .hmap file exported from the Haven &amp; Hearth game client.
+    /// Streams SSE progress events during import.
+    /// The import continues in the background even if the client disconnects after file upload.
+    /// </summary>
+    private static async Task ImportHmapFile(
+        string tenantId,
+        IFormFile file,
+        [FromForm] string mode,
+        IHmapImportService importService,
+        ImportLockService lockService,
+        IConfiguration configuration,
+        HttpContext context,
+        IAuditService auditService,
+        ILogger<Program> logger)
+    {
+        // Verify user has access to this tenant (unless SuperAdmin)
+        if (!context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin))
+        {
+            var currentTenantId = context.User.FindFirst("TenantId")?.Value;
+            if (currentTenantId != tenantId)
+            {
+                context.Response.StatusCode = 403;
+                await context.Response.WriteAsJsonAsync(new { error = "Forbidden" });
+                return;
+            }
+        }
+
+        // Check import lock and cooldown
+        var (lockAcquired, lockReason, waitTime) = lockService.TryAcquireLock(tenantId);
+        if (!lockAcquired)
+        {
+            context.Response.StatusCode = 429; // Too Many Requests
+            await context.Response.WriteAsJsonAsync(new
+            {
+                error = lockReason,
+                cooldownSeconds = waitTime?.TotalSeconds ?? 0
+            });
+            return;
+        }
+
+        // Validate file
+        if (file == null || file.Length == 0)
+        {
+            lockService.ReleaseLock(tenantId, success: false);
+            context.Response.StatusCode = 400;
+            await context.Response.WriteAsJsonAsync(new { error = "No file provided" });
+            return;
+        }
+
+        if (!file.FileName.EndsWith(".hmap", StringComparison.OrdinalIgnoreCase))
+        {
+            lockService.ReleaseLock(tenantId, success: false);
+            context.Response.StatusCode = 400;
+            await context.Response.WriteAsJsonAsync(new { error = "File must be a .hmap file" });
+            return;
+        }
+
+        // Parse import mode
+        if (!Enum.TryParse<HmapImportMode>(mode, ignoreCase: true, out var importMode))
+        {
+            lockService.ReleaseLock(tenantId, success: false);
+            context.Response.StatusCode = 400;
+            await context.Response.WriteAsJsonAsync(new { error = "Invalid mode. Must be 'Merge' or 'CreateNew'" });
+            return;
+        }
+
+        var gridStorage = configuration["GridStorage"] ?? "map";
+
+        // Save uploaded file to temp location so import can continue even if client disconnects
+        var tempDir = Path.Combine(gridStorage, "hmap-temp");
+        Directory.CreateDirectory(tempDir);
+        var tempFilePath = Path.Combine(tempDir, $"{tenantId}_{Guid.NewGuid():N}.hmap");
+
+        try
+        {
+            using (var tempFileStream = new FileStream(tempFilePath, FileMode.Create, FileAccess.Write))
+            {
+                await file.CopyToAsync(tempFileStream);
+            }
+        }
+        catch (Exception ex)
+        {
+            lockService.ReleaseLock(tenantId, success: false);
+            logger.LogError(ex, "Failed to save uploaded .hmap file for tenant {TenantId}", tenantId);
+            context.Response.StatusCode = 500;
+            await context.Response.WriteAsJsonAsync(new { error = "Failed to save uploaded file" });
+            return;
+        }
+
+        logger.LogInformation(
+            "Starting .hmap import for tenant {TenantId}, file: {FileName}, size: {Size} bytes, mode: {Mode}",
+            tenantId, file.FileName, file.Length, importMode);
+
+        // Set up SSE response
+        context.Response.Headers["Content-Type"] = "text/event-stream";
+        context.Response.Headers["Cache-Control"] = "no-cache";
+        context.Response.Headers["Connection"] = "keep-alive";
+
+        var writer = context.Response.BodyWriter;
+        var clientDisconnected = false;
+
+        // Helper to send SSE events (ignores errors if client disconnected)
+        async Task SendProgressEvent(string phase, int current, int total, string? itemName = null)
+        {
+            if (clientDisconnected) return;
+            try
+            {
+                var data = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    phase,
+                    current,
+                    total,
+                    itemName = itemName ?? ""
+                });
+                var bytes = System.Text.Encoding.UTF8.GetBytes($"event: progress\ndata: {data}\n\n");
+                await writer.WriteAsync(bytes);
+                await writer.FlushAsync();
+            }
+            catch
+            {
+                clientDisconnected = true;
+            }
+        }
+
+        async Task SendCompleteEvent(object eventData)
+        {
+            if (clientDisconnected) return;
+            try
+            {
+                var data = System.Text.Json.JsonSerializer.Serialize(eventData);
+                var bytes = System.Text.Encoding.UTF8.GetBytes($"event: complete\ndata: {data}\n\n");
+                await writer.WriteAsync(bytes);
+                await writer.FlushAsync();
+            }
+            catch
+            {
+                clientDisconnected = true;
+            }
+        }
+
+        HmapImportResult? importResult = null;
+
+        try
+        {
+            // Create progress reporter that sends SSE events (continues even if client gone)
+            var progress = new Progress<HmapImportProgress>(async p =>
+            {
+                await SendProgressEvent(p.Phase, p.CurrentItem, p.TotalItems, p.CurrentItemName);
+            });
+
+            // Open file from disk - import continues regardless of client connection
+            using var stream = new FileStream(tempFilePath, FileMode.Open, FileAccess.Read);
+
+            // Use CancellationToken.None so import continues even if client disconnects
+            importResult = await importService.ImportAsync(stream, tenantId, importMode, gridStorage, progress, CancellationToken.None);
+
+            if (!importResult.Success)
+            {
+                logger.LogWarning("Import failed for tenant {TenantId}: {Error}", tenantId, importResult.ErrorMessage);
+
+                // Clean up any partially created data
+                if (importResult.CreatedMapIds.Count > 0 || importResult.CreatedGridIds.Count > 0)
+                {
+                    await SendProgressEvent("Cleaning up", 0, 1, "Rolling back changes...");
+                    await importService.CleanupFailedImportAsync(
+                        importResult.CreatedMapIds,
+                        importResult.CreatedGridIds,
+                        tenantId,
+                        gridStorage);
+                }
+
+                lockService.ReleaseLock(tenantId, success: false);
+
+                await SendCompleteEvent(new
+                {
+                    success = false,
+                    error = importResult.ErrorMessage ?? "Import failed",
+                    cleanedUp = importResult.CreatedMapIds.Count > 0 || importResult.CreatedGridIds.Count > 0
+                });
+                return;
+            }
+
+            // Success - release lock
+            lockService.ReleaseLock(tenantId, success: true);
+
+            // Audit log
+            await auditService.LogAsync(new AuditEntry
+            {
+                TenantId = tenantId,
+                Action = "HmapImport",
+                EntityType = "Map",
+                NewValue = $"Mode: {importMode}, Maps: {importResult.MapsCreated}, Grids: {importResult.GridsImported}, Skipped: {importResult.GridsSkipped}, Duration: {importResult.Duration.TotalSeconds:F1}s"
+            });
+
+            logger.LogInformation(
+                "Import completed for tenant {TenantId}: {MapsCreated} maps, {GridsImported} grids imported, {GridsSkipped} skipped",
+                tenantId, importResult.MapsCreated, importResult.GridsImported, importResult.GridsSkipped);
+
+            // Send completion event (may fail if client disconnected, that's OK)
+            await SendCompleteEvent(new
+            {
+                success = true,
+                mapsCreated = importResult.MapsCreated,
+                gridsImported = importResult.GridsImported,
+                gridsSkipped = importResult.GridsSkipped,
+                tilesRendered = importResult.TilesRendered,
+                affectedMapIds = importResult.AffectedMapIds.Distinct().ToList(),
+                duration = importResult.Duration.TotalSeconds
+            });
+        }
+        catch (InvalidDataException ex)
+        {
+            logger.LogWarning(ex, "Invalid .hmap file format for tenant {TenantId}", tenantId);
+            lockService.ReleaseLock(tenantId, success: false);
+            await SendCompleteEvent(new
+            {
+                success = false,
+                error = $"Invalid .hmap file: {ex.Message}",
+                cleanedUp = false
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Unexpected error during .hmap import for tenant {TenantId}", tenantId);
+
+            // Clean up any partially created data
+            if (importResult != null && (importResult.CreatedMapIds.Count > 0 || importResult.CreatedGridIds.Count > 0))
+            {
+                try
+                {
+                    await importService.CleanupFailedImportAsync(
+                        importResult.CreatedMapIds,
+                        importResult.CreatedGridIds,
+                        tenantId,
+                        gridStorage);
+                }
+                catch (Exception cleanupEx)
+                {
+                    logger.LogError(cleanupEx, "Failed to cleanup after import error for tenant {TenantId}", tenantId);
+                }
+            }
+
+            lockService.ReleaseLock(tenantId, success: false);
+            await SendCompleteEvent(new
+            {
+                success = false,
+                error = "An unexpected error occurred during import",
+                cleanedUp = importResult?.CreatedMapIds.Count > 0 || importResult?.CreatedGridIds.Count > 0
+            });
+        }
+        finally
+        {
+            // Only delete temp file on successful import
+            // Keep failed imports for 7 days for debugging (cleaned up by HmapTempCleanupService)
+            if (importResult?.Success == true)
+            {
+                try
+                {
+                    if (File.Exists(tempFilePath))
+                    {
+                        File.Delete(tempFilePath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to delete temp file {TempFile}", tempFilePath);
+                }
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Keeping temp file for debugging: {TempFile} (will be cleaned up after 7 days)",
+                    tempFilePath);
+            }
         }
     }
 

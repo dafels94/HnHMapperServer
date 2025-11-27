@@ -1,8 +1,173 @@
 @using HnHMapperServer.Core.DTOs
 @using HnHMapperServer.Web.Components.Admin
+@using HnHMapperServer.Web.Services
+@using Microsoft.Extensions.Logging
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Authorization
+@implements IDisposable
 @inject IHttpClientFactory HttpClientFactory
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
+@inject TenantContextService TenantContext
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject ILogger<MapManagement> Logger
+
+<MudPaper Class="pa-4 mb-4">
+    <MudStack Spacing="4">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Upload" Class="me-2" />
+            Import .hmap File
+        </MudText>
+
+        <MudText Typo="Typo.body2" Color="Color.Default">
+            Import map data from .hmap files exported from the Haven &amp; Hearth game client.
+        </MudText>
+
+        <MudGrid>
+            <MudItem xs="12" sm="6">
+                <MudFileUpload T="IBrowserFile"
+                               Accept=".hmap"
+                               @bind-Files="selectedFile"
+                               @bind-Files:after="OnFileSelected"
+                               MaximumFileCount="1"
+                               Disabled="@isImporting">
+                    <ActivatorContent>
+                        <MudButton Variant="Variant.Filled"
+                                   Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.AttachFile"
+                                   Disabled="@isImporting"
+                                   FullWidth="true">
+                            @if (selectedFile != null)
+                            {
+                                @($"Selected: {selectedFile.Name}")
+                            }
+                            else
+                            {
+                                @("Select .hmap File")
+                            }
+                        </MudButton>
+                    </ActivatorContent>
+                </MudFileUpload>
+            </MudItem>
+
+            <MudItem xs="12" sm="6">
+                <MudSelect T="string"
+                           Label="Import Mode"
+                           @bind-Value="importMode"
+                           Placeholder="Select import mode..."
+                           Variant="Variant.Outlined"
+                           Disabled="@isImporting"
+                           Required="true">
+                    <MudSelectItem Value="@("Merge")">
+                        Merge with existing maps
+                    </MudSelectItem>
+                    <MudSelectItem Value="@("CreateNew")">
+                        Create new maps
+                    </MudSelectItem>
+                </MudSelect>
+            </MudItem>
+        </MudGrid>
+
+        @if (importMode == "Merge")
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                <strong>Merge mode:</strong> Grids with matching IDs will be skipped. Only new grids will be imported into existing maps.
+            </MudAlert>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true">
+                <strong>Create new mode:</strong> New maps will be created for each segment. Existing maps will not be affected.
+            </MudAlert>
+        }
+
+        <MudAlert Severity="Severity.Warning" Dense="true" Icon="@Icons.Material.Filled.Warning">
+            <strong>Important:</strong> Once the file is uploaded, the import will continue even if you close this page or lose connection.
+            However, if the server is interrupted during processing (crash, restart, etc.), it may result in partially imported or corrupted map data.
+            A 5-minute cooldown applies between imports.
+        </MudAlert>
+
+        @if (cooldownSeconds > 0)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true">
+                <MudIcon Icon="@Icons.Material.Filled.Timer" Class="me-2" Style="vertical-align: middle;" />
+                Please wait <strong>@FormatCooldown(cooldownSeconds)</strong> before starting another import.
+            </MudAlert>
+        }
+
+        @if (isOtherImportRunning)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true">
+                <MudIcon Icon="@Icons.Material.Filled.HourglassTop" Class="me-2" Style="vertical-align: middle;" />
+                An import is already in progress. Please wait for it to complete.
+            </MudAlert>
+        }
+
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Success"
+                   StartIcon="@Icons.Material.Filled.CloudUpload"
+                   OnClick="ImportFile"
+                   Disabled="@(!CanStartImport)">
+            @if (isImporting)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="me-2" />
+                @("Importing...")
+            }
+            else if (isCheckingStatus)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="me-2" />
+                @("Checking...")
+            }
+            else
+            {
+                @("Import")
+            }
+        </MudButton>
+
+        @if (isImporting)
+        {
+            <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+                <MudStack Spacing="2">
+                    <MudText Typo="Typo.subtitle2">
+                        <MudIcon Icon="@Icons.Material.Filled.CloudSync" Class="me-2" Style="vertical-align: middle;" />
+                        @(importProgress ?? "Starting import...")
+                    </MudText>
+                    @if (currentProgressPercent > 0)
+                    {
+                        <MudProgressLinear Value="@currentProgressPercent" Color="Color.Primary" Size="Size.Large" Rounded="true">
+                            <MudText Typo="Typo.body2">@currentProgressPercent%</MudText>
+                        </MudProgressLinear>
+                    }
+                    else
+                    {
+                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+                    }
+                </MudStack>
+            </MudPaper>
+        }
+
+        @if (importResult != null)
+        {
+            <MudAlert Severity="@(importResult.Success ? Severity.Success : Severity.Error)" Dense="false">
+                @if (importResult.Success)
+                {
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.subtitle2"><strong>Import completed successfully!</strong></MudText>
+                        <MudText Typo="Typo.body2">Maps created: @importResult.MapsCreated</MudText>
+                        <MudText Typo="Typo.body2">Grids imported: @importResult.GridsImported</MudText>
+                        <MudText Typo="Typo.body2">Grids skipped (duplicates): @importResult.GridsSkipped</MudText>
+                        <MudText Typo="Typo.body2">Tiles rendered: @importResult.TilesRendered</MudText>
+                        <MudText Typo="Typo.body2">Duration: @importResult.Duration.ToString("F1")s</MudText>
+                    </MudStack>
+                }
+                else
+                {
+                    <MudText>Import failed: @importResult.ErrorMessage</MudText>
+                }
+            </MudAlert>
+        }
+    </MudStack>
+</MudPaper>
 
 <MudPaper Class="pa-4">
     <MudStack Spacing="4">
@@ -61,12 +226,11 @@
                            Size="Size.Small"
                            OnClick="@(() => ShowEditDialog(context))"
                            Title="Edit map" />
-            @* Delete button disabled - too destructive for tenant admins *@
-            @* <MudIconButton Icon="@Icons.Material.Filled.Delete"
+            <MudIconButton Icon="@Icons.Material.Filled.Delete"
                            Color="Color.Error"
                            Size="Size.Small"
                            OnClick="@(() => ShowDeleteConfirmation(context))"
-                           Title="Delete map" /> *@
+                           Title="Delete map" />
         </MudTd>
     </RowTemplate>
 </MudTable>
@@ -77,12 +241,380 @@
     private List<AdminMapDto>? maps;
     private bool isLoading = true;
 
+    // Import state
+    private IBrowserFile? selectedFile;
+    private string? importMode;
+    private bool isImporting;
+    private string? importProgress;
+    private int currentProgressPercent;
+    private ImportResultDto? importResult;
+    private bool isCheckingStatus;
+    private bool isOtherImportRunning;
+    private double cooldownSeconds;
+    private System.Threading.Timer? statusPollTimer;
+    private string? _currentTenantId;
+
+    private bool CanStartImport => selectedFile != null
+        && !string.IsNullOrEmpty(importMode)
+        && !isImporting
+        && !isCheckingStatus
+        && !isOtherImportRunning
+        && cooldownSeconds <= 0
+        && !string.IsNullOrEmpty(_currentTenantId);
+
+    // DTO for import result displayed in UI
+    private class ImportResultDto
+    {
+        public bool Success { get; set; }
+        public string? ErrorMessage { get; set; }
+        public int MapsCreated { get; set; }
+        public int GridsImported { get; set; }
+        public int GridsSkipped { get; set; }
+        public int TilesRendered { get; set; }
+        public double Duration { get; set; }
+    }
+
     /// <summary>
     /// Load all maps on component initialization.
     /// </summary>
     protected override async Task OnInitializedAsync()
     {
+        // Get tenant ID using the same pattern as other admin components
+        _currentTenantId = TenantContext.CurrentTenant?.Id;
+        if (string.IsNullOrEmpty(_currentTenantId))
+        {
+            var tenants = await TenantContext.GetTenantsAsync();
+            _currentTenantId = tenants.FirstOrDefault()?.Id;
+        }
+
+        // Fall back to getting TenantId from user claims
+        if (string.IsNullOrEmpty(_currentTenantId))
+        {
+            var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            _currentTenantId = authState.User.FindFirst(HnHMapperServer.Core.Constants.AuthorizationConstants.ClaimTypes.TenantId)?.Value;
+            Logger.LogInformation("Got tenant ID from claims: {TenantId}", _currentTenantId);
+        }
+
+        // Final fallback for default-tenant edge case
+        if (string.IsNullOrEmpty(_currentTenantId))
+        {
+            _currentTenantId = "default-tenant";
+            Logger.LogInformation("Using default-tenant fallback");
+        }
+
         await LoadMaps();
+        await CheckImportStatus();
+
+        // Start periodic status polling (every second for cooldown countdown)
+        statusPollTimer = new System.Threading.Timer(
+            async _ => await PollStatusIfNeeded(),
+            null,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(1));
+    }
+
+    /// <summary>
+    /// Check import status from the API.
+    /// </summary>
+    private async Task CheckImportStatus()
+    {
+        if (string.IsNullOrEmpty(_currentTenantId))
+            return;
+
+        try
+        {
+            var tenantId = _currentTenantId;
+            var httpClient = HttpClientFactory.CreateClient("API");
+            var response = await httpClient.GetAsync($"/api/tenants/{tenantId}/maps/import/status");
+
+            if (response.IsSuccessStatusCode)
+            {
+                var status = await response.Content.ReadFromJsonAsync<ImportStatusDto>();
+                if (status != null)
+                {
+                    isOtherImportRunning = status.IsImporting;
+                    cooldownSeconds = status.CooldownSeconds;
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+        catch
+        {
+            // Ignore status check errors
+        }
+    }
+
+    /// <summary>
+    /// Poll status if we need to update countdown or check if import finished.
+    /// </summary>
+    private async Task PollStatusIfNeeded()
+    {
+        // If we're in cooldown, decrement locally
+        if (cooldownSeconds > 0)
+        {
+            cooldownSeconds = Math.Max(0, cooldownSeconds - 1);
+            await InvokeAsync(StateHasChanged);
+
+            // When cooldown ends, do a full status check
+            if (cooldownSeconds <= 0)
+            {
+                await CheckImportStatus();
+            }
+        }
+        // If another import is running, poll to see when it's done
+        else if (isOtherImportRunning && !isImporting)
+        {
+            await CheckImportStatus();
+        }
+    }
+
+    /// <summary>
+    /// Format cooldown time for display.
+    /// </summary>
+    private string FormatCooldown(double seconds)
+    {
+        var ts = TimeSpan.FromSeconds(seconds);
+        if (ts.TotalMinutes >= 1)
+        {
+            return $"{(int)ts.TotalMinutes}m {ts.Seconds}s";
+        }
+        return $"{ts.Seconds}s";
+    }
+
+    // DTO for import status
+    private class ImportStatusDto
+    {
+        public bool IsImporting { get; set; }
+        public bool CanImport { get; set; }
+        public double CooldownSeconds { get; set; }
+    }
+
+    // DTO for cooldown error response
+    private class CooldownErrorDto
+    {
+        public string? Error { get; set; }
+        public double CooldownSeconds { get; set; }
+    }
+
+    /// <summary>
+    /// Handle file selection from MudFileUpload.
+    /// </summary>
+    private void OnFileSelected()
+    {
+        // @bind-Files handles setting selectedFile, we just clear previous result
+        importResult = null;
+    }
+
+    /// <summary>
+    /// Import the selected .hmap file via streaming upload to the API.
+    /// </summary>
+    private async Task ImportFile()
+    {
+        if (selectedFile == null || string.IsNullOrEmpty(_currentTenantId))
+            return;
+
+        isImporting = true;
+        importProgress = "Uploading file...";
+        currentProgressPercent = 0;
+        importResult = null;
+        StateHasChanged();
+
+        try
+        {
+            var tenantId = _currentTenantId;
+            Logger.LogInformation("Starting import for {FileName} ({Size} bytes)", selectedFile.Name, selectedFile.Size);
+
+            // Create multipart form content with the file stream
+            using var content = new MultipartFormDataContent();
+
+            // Stream the file - allow up to 1GB
+            var fileStream = selectedFile.OpenReadStream(maxAllowedSize: 1024L * 1024 * 1024);
+            var streamContent = new StreamContent(fileStream);
+            streamContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+            content.Add(streamContent, "file", selectedFile.Name);
+            content.Add(new StringContent(importMode), "mode");
+
+            // Use the API client with extended timeout
+            var httpClient = HttpClientFactory.CreateClient("API");
+            httpClient.Timeout = TimeSpan.FromMinutes(30);
+
+            // Send the request with ResponseHeadersRead to enable streaming SSE
+            var request = new HttpRequestMessage(HttpMethod.Post, $"/api/tenants/{tenantId}/maps/import")
+            {
+                Content = content
+            };
+            var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                Logger.LogError("Import failed with status {Status}: {Error}", response.StatusCode, errorContent);
+
+                // Try to parse error JSON
+                try
+                {
+                    var errorDto = System.Text.Json.JsonSerializer.Deserialize<CooldownErrorDto>(errorContent);
+                    if (errorDto?.CooldownSeconds > 0)
+                    {
+                        cooldownSeconds = errorDto.CooldownSeconds;
+                    }
+                    throw new Exception(errorDto?.Error ?? $"HTTP {(int)response.StatusCode}");
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    throw new Exception($"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}");
+                }
+            }
+
+            // Read SSE stream for progress updates
+            using var stream = await response.Content.ReadAsStreamAsync();
+            using var reader = new StreamReader(stream);
+
+            string? eventType = null;
+            string eventData = "";
+
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync();
+                if (line == null) break;
+
+                if (line.StartsWith("event: "))
+                {
+                    eventType = line.Substring(7);
+                }
+                else if (line.StartsWith("data: "))
+                {
+                    eventData += line.Substring(6);
+                }
+                else if (line == "")
+                {
+                    // End of event - process it
+                    if (!string.IsNullOrEmpty(eventType) && !string.IsNullOrEmpty(eventData))
+                    {
+                        await ProcessSseEvent(eventType, eventData);
+                    }
+                    eventType = null;
+                    eventData = "";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Import error");
+            importResult = new ImportResultDto
+            {
+                Success = false,
+                ErrorMessage = ex.Message
+            };
+            Snackbar.Add($"Import error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            await ImportFinished();
+        }
+    }
+
+    /// <summary>
+    /// Process SSE events from the import stream.
+    /// </summary>
+    private async Task ProcessSseEvent(string eventType, string eventData)
+    {
+        try
+        {
+            if (eventType == "progress")
+            {
+                var progress = System.Text.Json.JsonSerializer.Deserialize<ProgressEventDto>(eventData);
+                if (progress != null)
+                {
+                    currentProgressPercent = progress.Total > 0
+                        ? (int)Math.Round((double)progress.Current * 100 / progress.Total)
+                        : 0;
+                    importProgress = $"{progress.Phase}: {progress.Current}/{progress.Total}";
+                    if (!string.IsNullOrEmpty(progress.ItemName))
+                    {
+                        importProgress += $" - {progress.ItemName}";
+                    }
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+            else if (eventType == "complete")
+            {
+                var result = System.Text.Json.JsonSerializer.Deserialize<ImportCompleteEventDto>(eventData);
+                if (result != null)
+                {
+                    importResult = new ImportResultDto
+                    {
+                        Success = result.Success,
+                        ErrorMessage = result.Error,
+                        MapsCreated = result.MapsCreated,
+                        GridsImported = result.GridsImported,
+                        GridsSkipped = result.GridsSkipped,
+                        TilesRendered = result.TilesRendered,
+                        Duration = result.Duration
+                    };
+
+                    if (result.Success)
+                    {
+                        Snackbar.Add($"Import completed: {result.MapsCreated} maps, {result.GridsImported} grids imported, {result.GridsSkipped} skipped in {result.Duration:F1}s", Severity.Success);
+                        await LoadMaps();
+                    }
+                    else
+                    {
+                        Snackbar.Add($"Import failed: {result.Error}", Severity.Error);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to process SSE event: {EventType}", eventType);
+        }
+    }
+
+    /// <summary>
+    /// Cleanup after import finishes.
+    /// </summary>
+    private async Task ImportFinished()
+    {
+        isImporting = false;
+        importProgress = null;
+        selectedFile = null;
+
+        // Check status to get cooldown timer
+        await CheckImportStatus();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // DTO for import complete event - property names must match API camelCase
+    private class ImportCompleteEventDto
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("success")]
+        public bool Success { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("error")]
+        public string? Error { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("mapsCreated")]
+        public int MapsCreated { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("gridsImported")]
+        public int GridsImported { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("gridsSkipped")]
+        public int GridsSkipped { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("tilesRendered")]
+        public int TilesRendered { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("duration")]
+        public double Duration { get; set; }
+    }
+
+    // DTO for progress events - property names must match API camelCase
+    private class ProgressEventDto
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("phase")]
+        public string Phase { get; set; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("current")]
+        public int Current { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("total")]
+        public int Total { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("itemName")]
+        public string ItemName { get; set; } = "";
     }
 
     /// <summary>
@@ -152,67 +684,79 @@
         }
     }
 
-    // TODO: Delete functionality disabled - too destructive for tenant admins
-    // Consider re-enabling for SuperAdmin only in the future
+    /// <summary>
+    /// Show a confirmation dialog before deleting a map.
+    /// </summary>
+    private async Task ShowDeleteConfirmation(AdminMapDto map)
+    {
+        var result = await DialogService.ShowMessageBox(
+            "Delete Map",
+            $"Are you sure you want to delete map '{map.Name}' (ID: {map.Id})?\n\n" +
+            "This will permanently delete:\n" +
+            "• All grids in this map\n" +
+            "• All markers in this map\n" +
+            "• All custom markers in this map\n" +
+            "• All tile images (zoom levels 0-6)\n\n" +
+            "This action cannot be undone!",
+            yesText: "Delete Forever",
+            cancelText: "Cancel");
 
-    ///// <summary>
-    ///// Show a confirmation dialog before deleting a map.
-    ///// </summary>
-    //private async Task ShowDeleteConfirmation(AdminMapDto map)
-    //{
-    //    var result = await DialogService.ShowMessageBox(
-    //        "Delete Map",
-    //        $"Are you sure you want to delete map '{map.Name}' (ID: {map.Id})?\n\n" +
-    //        "This will permanently delete:\n" +
-    //        "• All grids in this map\n" +
-    //        "• All markers in this map\n" +
-    //        "• All tile images (zoom levels 0-6)\n" +
-    //        "• All related files on disk\n\n" +
-    //        "This action cannot be undone!",
-    //        yesText: "Delete Forever",
-    //        cancelText: "Cancel");
-    //
-    //    if (result == true)
-    //    {
-    //        await DeleteMap(map.Id);
-    //    }
-    //}
-    //
-    ///// <summary>
-    ///// Delete a map via the admin API.
-    ///// </summary>
-    //private async Task DeleteMap(int mapId)
-    //{
-    //    try
-    //    {
-    //        var httpClient = HttpClientFactory.CreateClient("API");
-    //        var response = await httpClient.DeleteAsync($"/admin/maps/{mapId}");
-    //
-    //        if (response.IsSuccessStatusCode)
-    //        {
-    //            var result = await response.Content.ReadFromJsonAsync<DeleteMapResponse>();
-    //            Snackbar.Add(result?.Message ?? "Map deleted successfully", Severity.Success);
-    //            await LoadMaps();
-    //        }
-    //        else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-    //        {
-    //            Snackbar.Add("Map not found. It may have already been deleted.", Severity.Warning);
-    //            await LoadMaps();
-    //        }
-    //        else
-    //        {
-    //            var errorContent = await response.Content.ReadAsStringAsync();
-    //            Snackbar.Add($"Failed to delete map: {errorContent}", Severity.Error);
-    //        }
-    //    }
-    //    catch (HttpRequestException ex)
-    //    {
-    //        Snackbar.Add($"Network error deleting map: {ex.Message}", Severity.Error);
-    //    }
-    //    catch (Exception ex)
-    //    {
-    //        Snackbar.Add($"Failed to delete map: {ex.Message}", Severity.Error);
-    //    }
-    //}
+        if (result == true)
+        {
+            await DeleteMap(map.Id);
+        }
+    }
+
+    /// <summary>
+    /// Delete a map via the admin API.
+    /// </summary>
+    private async Task DeleteMap(int mapId)
+    {
+        try
+        {
+            var httpClient = HttpClientFactory.CreateClient("API");
+            var response = await httpClient.DeleteAsync($"/admin/maps/{mapId}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                var result = await response.Content.ReadFromJsonAsync<DeleteMapResponseDto>();
+                Snackbar.Add(result?.Message ?? "Map deleted successfully", Severity.Success);
+                await LoadMaps();
+            }
+            else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                Snackbar.Add("Map not found. It may have already been deleted.", Severity.Warning);
+                await LoadMaps();
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                Snackbar.Add($"Failed to delete map: {errorContent}", Severity.Error);
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            Snackbar.Add($"Network error deleting map: {ex.Message}", Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to delete map: {ex.Message}", Severity.Error);
+        }
+    }
+
+    // DTO for delete response
+    private class DeleteMapResponseDto
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("message")]
+        public string? Message { get; set; }
+    }
+
+    /// <summary>
+    /// Dispose the status poll timer.
+    /// </summary>
+    public void Dispose()
+    {
+        statusPollTimer?.Dispose();
+    }
 }
 

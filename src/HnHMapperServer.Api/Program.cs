@@ -37,6 +37,17 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
     // Setting to 1500 as safety net with generous headroom
     serverOptions.Limits.MaxConcurrentConnections = 1500;           // Total HTTP connections
     serverOptions.Limits.MaxConcurrentUpgradedConnections = 100;   // WebSocket/SSE connections
+
+    // Allow large file uploads for .hmap import (up to 1GB)
+    serverOptions.Limits.MaxRequestBodySize = 1024 * 1024 * 1024;  // 1GB
+});
+
+// Configure form options for large file uploads (.hmap files can be 500MB+)
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 1024 * 1024 * 1024; // 1GB
+    options.ValueLengthLimit = int.MaxValue;
+    options.MultipartHeadersLengthLimit = int.MaxValue;
 });
 
 // Configure ImageSharp for better resource management during zoom tile generation
@@ -120,6 +131,8 @@ builder.Services.AddScoped<IAuditService, AuditService>();  // Phase 6: Audit lo
 builder.Services.AddScoped<INotificationService, NotificationService>();  // Notification system
 builder.Services.AddScoped<ITimerService, TimerService>();  // Timer system
 builder.Services.AddScoped<ITimerWarningService, TimerWarningService>();  // Timer warning tracking
+builder.Services.AddScoped<IHmapImportService, HmapImportService>();  // .hmap file import service
+builder.Services.AddSingleton<ImportLockService>();  // Import lock and cooldown management
 
 // Register memory cache for preview URL signing service
 builder.Services.AddMemoryCache();
@@ -168,6 +181,7 @@ builder.Services.AddHostedService<PingCleanupService>(); // Ping cleanup service
 builder.Services.AddHostedService<ZoomTileRebuildService>(); // Zoom tile rebuild service
 builder.Services.AddHostedService<TimerCheckService>(); // Timer monitoring and notification service
 builder.Services.AddHostedService<PreviewCleanupService>(); // Map preview cleanup service (7 day retention)
+builder.Services.AddHostedService<HmapTempCleanupService>(); // HMAP temp file cleanup service (7 day retention)
 
 // Configure shared data protection for cookie sharing with Web
 var dataProtectionPath = Path.Combine(

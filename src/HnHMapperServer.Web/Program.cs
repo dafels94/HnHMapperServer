@@ -26,6 +26,9 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
     // Disable MinResponseDataRate to prevent SignalR circuit timeouts
     // SignalR has its own keep-alive mechanism (default 15 seconds)
     serverOptions.Limits.MinResponseDataRate = null;
+
+    // Allow large file uploads for .hmap import (up to 1GB)
+    serverOptions.Limits.MaxRequestBodySize = 1024L * 1024 * 1024; // 1GB
 });
 
 // Configure ImageSharp for better resource management during zoom tile generation
@@ -124,8 +127,9 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 // This fixes "The maximum message size of 32768B was exceeded" errors
 builder.Services.AddSignalR(options =>
 {
-    // Increase max message size from 32KB to 1MB for large marker/map payloads
-    options.MaximumReceiveMessageSize = 1024 * 1024; // 1MB
+    // Increase max message size for large file uploads (.hmap files can be 500MB+)
+    // In Blazor Server, IBrowserFile streams go through SignalR
+    options.MaximumReceiveMessageSize = 1024L * 1024 * 1024; // 1GB
 
     // Increase parallel invocations to handle multiple concurrent JS interop calls
     options.MaximumParallelInvocationsPerClient = 10; // Default is 1
