@@ -214,14 +214,16 @@ function calculateGlobalMedianDistance(thingwallIds) {
 }
 
 /**
- * Draw a connection line between two thingwalls
+ * Draw a connection line between two thingwalls with a label near the target
  * @param {number} fromId - Source thingwall ID
  * @param {number} toId - Target thingwall ID
  * @param {number} level - Connection level (0, 1, or 2)
  * @param {function} getMarkerLatLng - Function to get LatLng for a marker ID
+ * @param {function} getMarkerName - Function to get name for a marker ID
  * @param {number} uncertainThreshold - Distance threshold for uncertain connections
+ * @param {Set} labeledThingwalls - Set of thingwall IDs that already have labels
  */
-function drawConnection(fromId, toId, level, getMarkerLatLng, uncertainThreshold) {
+function drawConnection(fromId, toId, level, getMarkerLatLng, getMarkerName, uncertainThreshold, labeledThingwalls) {
     const fromLatLng = getMarkerLatLng(fromId);
     const toLatLng = getMarkerLatLng(toId);
     if (!fromLatLng || !toLatLng) return;
@@ -239,6 +241,32 @@ function drawConnection(fromId, toId, level, getMarkerLatLng, uncertainThreshold
     // Draw the line
     const line = L.polyline([fromLatLng, toLatLng], style);
     connectionLinesLayer.addLayer(line);
+
+    // Add label near the source thingwall showing where it connects to
+    if (!labeledThingwalls.has(toId)) {
+        const name = getMarkerName(toId);
+        if (name) {
+            // Position label near the source (15% along the line towards target)
+            const labelLat = fromLatLng.lat + (toLatLng.lat - fromLatLng.lat) * 0.15;
+            const labelLng = fromLatLng.lng + (toLatLng.lng - fromLatLng.lng) * 0.15;
+
+            // Create label with level-appropriate styling
+            const labelColor = LEVEL_STYLES[styleIndex].color;
+            const labelOpacity = isUncertain ? 0.6 : 0.9;
+
+            const label = L.marker([labelLat, labelLng], {
+                icon: L.divIcon({
+                    className: 'connection-label',
+                    html: `<div class="connection-label-text" style="color:${labelColor}; opacity:${labelOpacity};">${name}</div>`,
+                    iconSize: [0, 0],
+                    iconAnchor: [0, 0]
+                }),
+                interactive: false
+            });
+            connectionLinesLayer.addLayer(label);
+            labeledThingwalls.add(toId);
+        }
+    }
 }
 
 /**
@@ -246,9 +274,10 @@ function drawConnection(fromId, toId, level, getMarkerLatLng, uncertainThreshold
  * @param {number} thingwallId - The hovered thingwall ID
  * @param {object} sourceLatLng - Leaflet LatLng of hovered thingwall
  * @param {function} getMarkerLatLng - Function to get LatLng for a marker ID
+ * @param {function} getMarkerName - Function to get name for a marker ID
  * @param {function} highlightMarker - Function to highlight a marker
  */
-export function showConnections(thingwallId, sourceLatLng, getMarkerLatLng, highlightMarker) {
+export function showConnections(thingwallId, sourceLatLng, getMarkerLatLng, getMarkerName, highlightMarker) {
     if (!isFeatureEnabled) return;
 
     clearConnectionLines();
@@ -263,6 +292,7 @@ export function showConnections(thingwallId, sourceLatLng, getMarkerLatLng, high
     // Track visited thingwalls to avoid duplicate lines
     const visited = new Set([thingwallId]);
     const drawnEdges = new Set(); // Track "fromId-toId" to avoid duplicate lines
+    const labeledThingwalls = new Set([thingwallId]); // Track which thingwalls have labels
 
     // Helper to create edge key (always smaller ID first for consistency)
     const edgeKey = (a, b) => a < b ? `${a}-${b}` : `${b}-${a}`;
@@ -279,7 +309,7 @@ export function showConnections(thingwallId, sourceLatLng, getMarkerLatLng, high
     level1.forEach(l1Id => {
         const key = edgeKey(thingwallId, l1Id);
         if (!drawnEdges.has(key)) {
-            drawConnection(thingwallId, l1Id, 0, getMarkerLatLng, uncertainThreshold);
+            drawConnection(thingwallId, l1Id, 0, getMarkerLatLng, getMarkerName, uncertainThreshold, labeledThingwalls);
             drawnEdges.add(key);
         }
         visited.add(l1Id);
@@ -300,7 +330,7 @@ export function showConnections(thingwallId, sourceLatLng, getMarkerLatLng, high
             if (!visited.has(l2Id)) {
                 const key = edgeKey(l1Id, l2Id);
                 if (!drawnEdges.has(key)) {
-                    drawConnection(l1Id, l2Id, 1, getMarkerLatLng, uncertainThreshold);
+                    drawConnection(l1Id, l2Id, 1, getMarkerLatLng, getMarkerName, uncertainThreshold, labeledThingwalls);
                     drawnEdges.add(key);
                 }
                 level2.add(l2Id);
@@ -315,7 +345,7 @@ export function showConnections(thingwallId, sourceLatLng, getMarkerLatLng, high
             if (!visited.has(l3Id)) {
                 const key = edgeKey(l2Id, l3Id);
                 if (!drawnEdges.has(key)) {
-                    drawConnection(l2Id, l3Id, 2, getMarkerLatLng, uncertainThreshold);
+                    drawConnection(l2Id, l3Id, 2, getMarkerLatLng, getMarkerName, uncertainThreshold, labeledThingwalls);
                     drawnEdges.add(key);
                 }
                 visited.add(l3Id);

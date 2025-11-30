@@ -252,6 +252,7 @@ export function addMarker(markerData, mapInstance, skipStorage = false) {
                     markerData.id,
                     latlng,
                     getThingwallLatLng,
+                    getThingwallName,
                     highlightThingwallMarker
                 );
             }
@@ -582,6 +583,16 @@ function msToTimeStr(duration) {
 function getThingwallLatLng(thingwallId) {
     const tw = thingwallMarkers[thingwallId];
     return tw ? tw.marker.getLatLng() : null;
+}
+
+/**
+ * Get the name of a thingwall marker by ID
+ * @param {number} thingwallId - Thingwall marker ID
+ * @returns {string|null} - Thingwall name or null if not found
+ */
+function getThingwallName(thingwallId) {
+    const tw = thingwallMarkers[thingwallId];
+    return tw ? tw.data.name : null;
 }
 
 /**

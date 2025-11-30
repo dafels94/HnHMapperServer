@@ -495,3 +495,23 @@
     z-index: 999 !important;
 }
 
+/* Connection label styling */
+.connection-label {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+.connection-label-text {
+    font-size: 11px;
+    font-weight: bold;
+    white-space: nowrap;
+    text-shadow:
+        -1px -1px 0 #000,
+        1px -1px 0 #000,
+        -1px 1px 0 #000,
+        1px 1px 0 #000,
+        0 0 4px rgba(0, 0, 0, 0.8);
+    pointer-events: none;
+}
+
