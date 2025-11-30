@@ -33,10 +33,9 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
     serverOptions.Limits.MinResponseDataRate = null;
 
     // Global connection limits to prevent server overload
-    // 50 users × 8 browser connections = 400 base + 100 buffer for SSE/API = 500
-    // Setting to 1500 as safety net with generous headroom
-    serverOptions.Limits.MaxConcurrentConnections = 1500;           // Total HTTP connections
-    serverOptions.Limits.MaxConcurrentUpgradedConnections = 100;   // WebSocket/SSE connections
+    // Production: generous limits, rely on rate limiting for abuse prevention
+    serverOptions.Limits.MaxConcurrentConnections = 10000;          // Total HTTP connections
+    serverOptions.Limits.MaxConcurrentUpgradedConnections = 500;    // WebSocket/SSE connections
 
     // Allow large file uploads for .hmap import (up to 1GB)
     serverOptions.Limits.MaxRequestBodySize = 1024 * 1024 * 1024;  // 1GB
