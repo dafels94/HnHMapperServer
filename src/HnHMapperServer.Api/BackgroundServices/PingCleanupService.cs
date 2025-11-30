@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HnHMapperServer.Core.DTOs;
 using HnHMapperServer.Services.Interfaces;
 
@@ -32,8 +33,11 @@ public class PingCleanupService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var sw = Stopwatch.StartNew();
             try
             {
+                _logger.LogDebug("Ping cleanup job started");
+
                 using var scope = _scopeFactory.CreateScope();
                 var pingService = scope.ServiceProvider.GetRequiredService<IPingService>();
                 var updateNotificationService = scope.ServiceProvider.GetRequiredService<IUpdateNotificationService>();
@@ -52,9 +56,14 @@ public class PingCleanupService : BackgroundService
                     updateNotificationService.NotifyPingDeleted(deleteEvent);
                 }
 
+                sw.Stop();
                 if (expiredPings.Any())
                 {
-                    _logger.LogInformation("Cleaned up {Count} expired pings across all tenants", expiredPings.Count);
+                    _logger.LogInformation("Cleaned up {Count} expired pings across all tenants in {ElapsedMs}ms", expiredPings.Count, sw.ElapsedMilliseconds);
+                }
+                else
+                {
+                    _logger.LogDebug("Ping cleanup job completed in {ElapsedMs}ms (no expired pings)", sw.ElapsedMilliseconds);
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
@@ -65,7 +74,8 @@ public class PingCleanupService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in ping cleanup service");
+                sw.Stop();
+                _logger.LogError(ex, "Error in ping cleanup service after {ElapsedMs}ms", sw.ElapsedMilliseconds);
                 await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
             }
         }

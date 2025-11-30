@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace HnHMapperServer.Api.BackgroundServices;
 
 /// <summary>
@@ -64,6 +66,9 @@ public class HmapTempCleanupService : BackgroundService
 
     private Task CleanupTempFilesAsync(int retentionDays)
     {
+        var sw = Stopwatch.StartNew();
+        _logger.LogDebug("HMAP temp cleanup job started");
+
         try
         {
             var gridStorage = _configuration["GridStorage"] ?? "map";
@@ -71,7 +76,8 @@ public class HmapTempCleanupService : BackgroundService
 
             if (!Directory.Exists(tempDir))
             {
-                _logger.LogDebug("HMAP temp directory does not exist, nothing to clean up");
+                sw.Stop();
+                _logger.LogDebug("HMAP temp cleanup job completed in {ElapsedMs}ms: directory does not exist, nothing to clean up", sw.ElapsedMilliseconds);
                 return Task.CompletedTask;
             }
 
@@ -98,21 +104,24 @@ public class HmapTempCleanupService : BackgroundService
                 }
             }
 
+            sw.Stop();
             if (deletedCount > 0)
             {
                 _logger.LogInformation(
-                    "HMAP temp cleanup: deleted {Count} file(s), freed {Size:F2} MB",
+                    "HMAP temp cleanup job completed in {ElapsedMs}ms: deleted {Count} file(s), freed {Size:F2} MB",
+                    sw.ElapsedMilliseconds,
                     deletedCount,
                     totalSize / (1024.0 * 1024.0));
             }
             else
             {
-                _logger.LogDebug("HMAP temp cleanup: no stale files found");
+                _logger.LogDebug("HMAP temp cleanup job completed in {ElapsedMs}ms: no stale files found", sw.ElapsedMilliseconds);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error during HMAP temp file cleanup");
+            sw.Stop();
+            _logger.LogError(ex, "Error during HMAP temp file cleanup after {ElapsedMs}ms", sw.ElapsedMilliseconds);
         }
 
         return Task.CompletedTask;

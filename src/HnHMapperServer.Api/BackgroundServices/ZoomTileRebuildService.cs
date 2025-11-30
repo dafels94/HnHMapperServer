@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HnHMapperServer.Services.Interfaces;
 
 namespace HnHMapperServer.Api.BackgroundServices;
@@ -49,8 +50,11 @@ public class ZoomTileRebuildService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var sw = Stopwatch.StartNew();
             try
             {
+                _logger.LogDebug("Zoom tile rebuild job started");
+
                 using var scope = _scopeFactory.CreateScope();
                 var tileService = scope.ServiceProvider.GetRequiredService<ITileService>();
                 var tenantService = scope.ServiceProvider.GetRequiredService<ITenantService>();
@@ -86,9 +90,14 @@ public class ZoomTileRebuildService : BackgroundService
                     }
                 }
 
+                sw.Stop();
                 if (totalRebuiltCount > 0)
                 {
-                    _logger.LogInformation("Zoom rebuild cycle completed: {Count} tiles rebuilt across all tenants", totalRebuiltCount);
+                    _logger.LogInformation("Zoom tile rebuild job completed in {ElapsedMs}ms: {Count} tiles rebuilt across all tenants", sw.ElapsedMilliseconds, totalRebuiltCount);
+                }
+                else
+                {
+                    _logger.LogDebug("Zoom tile rebuild job completed in {ElapsedMs}ms (no tiles to rebuild)", sw.ElapsedMilliseconds);
                 }
 
                 await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);
@@ -99,7 +108,8 @@ public class ZoomTileRebuildService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in zoom tile rebuild service");
+                sw.Stop();
+                _logger.LogError(ex, "Error in zoom tile rebuild service after {ElapsedMs}ms", sw.ElapsedMilliseconds);
                 await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);
             }
         }

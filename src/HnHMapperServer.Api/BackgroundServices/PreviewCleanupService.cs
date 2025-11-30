@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HnHMapperServer.Services.Interfaces;
 
 namespace HnHMapperServer.Api.BackgroundServices;
@@ -58,6 +59,9 @@ public class PreviewCleanupService : BackgroundService
 
     private async Task CleanupOldPreviewsAsync()
     {
+        var sw = Stopwatch.StartNew();
+        _logger.LogDebug("Preview cleanup job started");
+
         using var scope = _serviceProvider.CreateScope();
         var mapPreviewService = scope.ServiceProvider.GetRequiredService<IMapPreviewService>();
 
@@ -65,18 +69,20 @@ public class PreviewCleanupService : BackgroundService
         {
             var deletedCount = await mapPreviewService.CleanupOldPreviewsAsync();
 
+            sw.Stop();
             if (deletedCount > 0)
             {
-                _logger.LogInformation("Preview cleanup completed: deleted {Count} old preview images", deletedCount);
+                _logger.LogInformation("Preview cleanup job completed in {ElapsedMs}ms: deleted {Count} old preview images", sw.ElapsedMilliseconds, deletedCount);
             }
             else
             {
-                _logger.LogDebug("Preview cleanup completed: no old previews to delete");
+                _logger.LogDebug("Preview cleanup job completed in {ElapsedMs}ms: no old previews to delete", sw.ElapsedMilliseconds);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error cleaning up old preview images");
+            sw.Stop();
+            _logger.LogError(ex, "Error cleaning up old preview images after {ElapsedMs}ms", sw.ElapsedMilliseconds);
         }
     }
 }

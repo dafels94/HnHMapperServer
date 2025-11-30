@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HnHMapperServer.Services.Interfaces;
 
 namespace HnHMapperServer.Api.BackgroundServices;
@@ -31,8 +32,11 @@ public class MarkerReadinessService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var sw = Stopwatch.StartNew();
             try
             {
+                _logger.LogDebug("Marker readiness job started");
+
                 using var scope = _scopeFactory.CreateScope();
                 var markerService = scope.ServiceProvider.GetRequiredService<IMarkerService>();
                 var tenantService = scope.ServiceProvider.GetRequiredService<ITenantService>();
@@ -46,6 +50,9 @@ public class MarkerReadinessService : BackgroundService
                     await markerService.UpdateReadinessOnMarkersAsync(tenant.Id);
                 }
 
+                sw.Stop();
+                _logger.LogDebug("Marker readiness job completed in {ElapsedMs}ms", sw.ElapsedMilliseconds);
+
                 await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
             }
             catch (OperationCanceledException)
@@ -54,7 +61,8 @@ public class MarkerReadinessService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in marker readiness service");
+                sw.Stop();
+                _logger.LogError(ex, "Error in marker readiness service after {ElapsedMs}ms", sw.ElapsedMilliseconds);
                 await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
             }
         }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HnHMapperServer.Services.Interfaces;
 
 namespace HnHMapperServer.Api.BackgroundServices;
@@ -31,8 +32,11 @@ public class CharacterCleanupService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var sw = Stopwatch.StartNew();
             try
             {
+                _logger.LogDebug("Character cleanup job started");
+
                 using var scope = _scopeFactory.CreateScope();
                 var characterService = scope.ServiceProvider.GetRequiredService<ICharacterService>();
                 var tenantService = scope.ServiceProvider.GetRequiredService<ITenantService>();
@@ -46,6 +50,9 @@ public class CharacterCleanupService : BackgroundService
                     characterService.CleanupStaleCharacters(TimeSpan.FromSeconds(10), tenant.Id);
                 }
 
+                sw.Stop();
+                _logger.LogDebug("Character cleanup job completed in {ElapsedMs}ms", sw.ElapsedMilliseconds);
+
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
             catch (OperationCanceledException)
@@ -54,7 +61,8 @@ public class CharacterCleanupService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in character cleanup service");
+                sw.Stop();
+                _logger.LogError(ex, "Error in character cleanup service after {ElapsedMs}ms", sw.ElapsedMilliseconds);
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
         }

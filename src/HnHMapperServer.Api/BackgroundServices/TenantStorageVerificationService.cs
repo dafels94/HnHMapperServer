@@ -1,4 +1,4 @@
-using HnHMapperServer.Core.DTOs;
+using System.Diagnostics;
 using HnHMapperServer.Infrastructure.Data;
 using HnHMapperServer.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -62,17 +62,19 @@ public class TenantStorageVerificationService : BackgroundService
 
     private async Task VerifyAllTenantsAsync(CancellationToken cancellationToken)
     {
+        var sw = Stopwatch.StartNew();
+        _logger.LogDebug("Storage verification job started");
+
         using var scope = _serviceProvider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var quotaService = scope.ServiceProvider.GetRequiredService<IStorageQuotaService>();
-        var auditService = scope.ServiceProvider.GetRequiredService<IAuditService>();
 
         var tenants = await db.Tenants
             .IgnoreQueryFilters()
             .Where(t => t.IsActive)
             .ToListAsync(cancellationToken);
 
-        _logger.LogInformation("Starting storage verification for {Count} active tenants", tenants.Count);
+        _logger.LogDebug("Starting storage verification for {Count} active tenants", tenants.Count);
 
         foreach (var tenant in tenants)
         {
@@ -81,7 +83,7 @@ public class TenantStorageVerificationService : BackgroundService
 
             try
             {
-                await VerifyTenantAsync(tenant.Id, db, quotaService, auditService);
+                await VerifyTenantAsync(tenant.Id, db, quotaService);
             }
             catch (Exception ex)
             {
@@ -89,65 +91,43 @@ public class TenantStorageVerificationService : BackgroundService
             }
         }
 
-        _logger.LogInformation("Storage verification complete");
+        sw.Stop();
+        _logger.LogInformation("Storage verification job completed in {ElapsedMs}ms for {Count} tenants", sw.ElapsedMilliseconds, tenants.Count);
     }
 
-    private async Task VerifyTenantAsync(string tenantId, ApplicationDbContext db, IStorageQuotaService quotaService, IAuditService auditService)
+    private async Task VerifyTenantAsync(string tenantId, ApplicationDbContext db, IStorageQuotaService quotaService)
     {
-        // Calculate from database: SUM(FileSizeBytes)
-        var dbUsageBytes = await db.Tiles
-            .IgnoreQueryFilters()
-            .Where(t => t.TenantId == tenantId)
-            .SumAsync(t => (long)t.FileSizeBytes);
-        var dbUsageMB = dbUsageBytes / 1024.0 / 1024.0;
-
-        // Calculate from filesystem
+        // Calculate from filesystem only (avoids expensive DB query that causes lockups)
         var tenantDir = Path.Combine(_gridStorage, "tenants", tenantId);
         var fsUsageBytes = CalculateDirectorySize(tenantDir);
         var fsUsageMB = fsUsageBytes / 1024.0 / 1024.0;
 
-        // Compare
-        var diffMB = Math.Abs(dbUsageMB - fsUsageMB);
+        // Get current tracked value
+        var tenant = await db.Tenants
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(t => t.Id == tenantId);
 
-        if (diffMB > 10) // More than 10 MB difference
+        if (tenant != null)
         {
-            _logger.LogWarning(
-                "Storage discrepancy detected for tenant {TenantId}: DB={DbMB:F2}MB, FS={FsMB:F2}MB, Diff={DiffMB:F2}MB",
-                tenantId, dbUsageMB, fsUsageMB, diffMB);
+            var oldUsage = tenant.CurrentStorageMB;
+            var diffMB = Math.Abs(oldUsage - fsUsageMB);
 
-            // Update to filesystem value (filesystem is source of truth)
-            var tenant = await db.Tenants
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(t => t.Id == tenantId);
-
-            if (tenant != null)
+            // Update if there's a significant difference (> 1 MB)
+            if (diffMB > 1)
             {
-                var oldUsage = tenant.CurrentStorageMB;
                 tenant.CurrentStorageMB = fsUsageMB;
                 await db.SaveChangesAsync();
 
                 _logger.LogInformation(
                     "Updated tenant {TenantId} storage usage: {OldMB:F2}MB → {NewMB:F2}MB",
                     tenantId, oldUsage, fsUsageMB);
-
-                // Log storage discrepancy to audit table
-                await auditService.LogAsync(new AuditEntry
-                {
-                    TenantId = tenantId,
-                    UserId = null, // System action
-                    Action = "StorageDiscrepancyDetected",
-                    EntityType = "Tenant",
-                    EntityId = tenantId,
-                    OldValue = $"{oldUsage:F2} MB (DB tracked)",
-                    NewValue = $"{fsUsageMB:F2} MB (filesystem actual), Discrepancy: {diffMB:F2} MB ({(diffMB / oldUsage * 100):F1}%)"
-                });
             }
-        }
-        else
-        {
-            _logger.LogDebug(
-                "Storage verified for tenant {TenantId}: {UsageMB:F2}MB (diff: {DiffMB:F2}MB)",
-                tenantId, dbUsageMB, diffMB);
+            else
+            {
+                _logger.LogDebug(
+                    "Storage verified for tenant {TenantId}: {UsageMB:F2}MB",
+                    tenantId, fsUsageMB);
+            }
         }
 
         // Recalculate storage (this also writes .storage.json metadata file)
