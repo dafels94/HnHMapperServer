@@ -475,39 +475,6 @@ builder.Services.AddResponseCompression(options =>
         .Where(mimeType => mimeType != "text/event-stream");
 });
 
-// Configure rate limiting to prevent server overload from excessive concurrent requests
-// Primary use case: Tile endpoint can receive 100+ simultaneous requests per user during map zoom
-builder.Services.AddRateLimiter(options =>
-{
-    // Per-IP concurrency limiter - partition by client IP address
-    // Each IP gets 100 concurrent requests with 200 queued
-    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
-    {
-        // Use client IP as partition key (works through reverse proxy with X-Forwarded-For)
-        var ipAddress = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-
-        return RateLimitPartition.GetConcurrencyLimiter(
-            partitionKey: ipAddress,
-            factory: _ => new ConcurrencyLimiterOptions
-            {
-                PermitLimit = 500,              // 500 concurrent requests per IP
-                QueueLimit = 1000,              // Queue up to 1000 more per IP
-                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-            });
-    });
-
-    // Rejection response when queue is full (should be rare with generous limits)
-    options.OnRejected = async (context, cancellationToken) =>
-    {
-        context.HttpContext.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-        context.HttpContext.Response.Headers["Retry-After"] = "2";
-
-        await context.HttpContext.Response.WriteAsync(
-            "Server is temporarily overloaded. Please retry in 2 seconds.",
-            cancellationToken);
-    };
-});
-
 var app = builder.Build();
 
 // Ensure grid storage directory exists BEFORE database creation
