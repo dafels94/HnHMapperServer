@@ -68,7 +68,13 @@
                         OnCustomMarkerSelected="@SelectCustomMarker"
                         OnStopFollowing="@StopFollowing"
                         OnSetTimerForMarker="@ShowSetTimerForMarkerDialog"
-                        OnSetTimerForCustomMarker="@ShowSetTimerForCustomMarkerDialog" />
+                        OnSetTimerForCustomMarker="@ShowSetTimerForCustomMarkerDialog"
+                        HiddenMarkerGroups="@hiddenMarkerGroups"
+                        OnMarkerGroupVisibilityChanged="@HandleMarkerGroupVisibilityChanged"
+                        Roads="@allRoads"
+                        OnRoadSelected="@SelectRoad"
+                        OnRoadEdit="@ShowEditRoadDialog"
+                        OnRoadDelete="@DeleteRoadAsync" />
 
             <MudMainContent>
                 <!-- Floating Menu Button - dynamically positioned based on sidebar state -->
@@ -98,6 +104,76 @@
                         Following: @(allCharacters.FirstOrDefault(c => c.Id == followingCharacterId)?.Name ?? "Unknown")
                     </MudChip>
                 }
+
+                <!-- Overlay Toggle Buttons - Top Left (below Leaflet zoom controls) -->
+                <div style="position: fixed; top: 160px; left: 16px; z-index: 1400; display: flex; flex-direction: column; gap: 8px;">
+                    <MudTooltip Text="Toggle Player Claims" Placement="Placement.Right">
+                        <MudButton OnClick="@TogglePClaim"
+                                   Variant="Variant.Filled"
+                                   Color="@(showPClaim ? Color.Error : Color.Default)"
+                                   Style="min-width: 40px; min-height: 40px; padding: 8px; border-radius: 50%;">
+                            <img src="/gfx/customicons/pclaim.png" alt="PClaim" style="width: 24px; height: 24px; @(showPClaim ? "" : "opacity: 0.5;")" />
+                        </MudButton>
+                    </MudTooltip>
+
+                    <MudTooltip Text="Toggle Village Claims" Placement="Placement.Right">
+                        <MudButton OnClick="@ToggleVClaim"
+                                   Variant="Variant.Filled"
+                                   Color="@(showVClaim ? Color.Warning : Color.Default)"
+                                   Style="min-width: 40px; min-height: 40px; padding: 8px; border-radius: 50%;">
+                            <img src="/gfx/customicons/vclaim.png" alt="VClaim" style="width: 24px; height: 24px; @(showVClaim ? "" : "opacity: 0.5;")" />
+                        </MudButton>
+                    </MudTooltip>
+
+                    <MudTooltip Text="Toggle Provinces" Placement="Placement.Right">
+                        <MudButton OnClick="@ToggleProvince"
+                                   Variant="Variant.Filled"
+                                   Color="@(showProvince ? Color.Info : Color.Default)"
+                                   Style="min-width: 40px; min-height: 40px; padding: 8px; border-radius: 50%;">
+                            <img src="/gfx/hud/wndmap/btns/realm.png" alt="Provinces" style="width: 24px; height: 24px; @(showProvince ? "" : "opacity: 0.5;")" />
+                        </MudButton>
+                    </MudTooltip>
+
+                    <MudTooltip Text="Toggle Thingwall Highlighting" Placement="Placement.Right">
+                        <MudButton OnClick="@ToggleThingwallHighlight"
+                                   Variant="Variant.Filled"
+                                   Color="@(showThingwallHighlight ? Color.Info : Color.Default)"
+                                   Style="min-width: 40px; min-height: 40px; padding: 8px; border-radius: 50%;">
+                            <img src="/gfx/terobjs/mm/thingwall.png" alt="Thingwall"
+                                 style="width: 24px; height: 24px; @(showThingwallHighlight ? "" : "opacity: 0.5;")" />
+                        </MudButton>
+                    </MudTooltip>
+
+                    <MudTooltip Text="Toggle Quest Giver Highlighting" Placement="Placement.Right">
+                        <MudButton OnClick="@ToggleQuestGiverHighlight"
+                                   Variant="Variant.Filled"
+                                   Color="@(showQuestGiverHighlight ? Color.Success : Color.Default)"
+                                   Style="min-width: 40px; min-height: 40px; padding: 8px; border-radius: 50%;">
+                            <img src="/gfx/invobjs/small/bush.png" alt="Quest Givers"
+                                 style="width: 24px; height: 24px; @(showQuestGiverHighlight ? "" : "opacity: 0.5;")" />
+                        </MudButton>
+                    </MudTooltip>
+
+                    <MudTooltip Text="Toggle Roads" Placement="Placement.Right">
+                        <MudButton OnClick="@ToggleRoads"
+                                   Variant="Variant.Filled"
+                                   Color="@(showRoads ? Color.Warning : Color.Default)"
+                                   Style="min-width: 40px; min-height: 40px; padding: 8px; border-radius: 50%;">
+                            <MudIcon Icon="@Icons.Material.Filled.Timeline"
+                                     Style="@(showRoads ? "" : "opacity: 0.5;")" />
+                        </MudButton>
+                    </MudTooltip>
+
+                    <MudTooltip Text="Marker Filter Mode (show only highlighted markers)" Placement="Placement.Right">
+                        <MudButton OnClick="@ToggleMarkerFilterMode"
+                                   Variant="Variant.Filled"
+                                   Color="@(showMarkerFilterMode ? Color.Warning : Color.Default)"
+                                   Style="min-width: 40px; min-height: 40px; padding: 8px; border-radius: 50%;">
+                            <MudIcon Icon="@Icons.Material.Filled.FilterAlt"
+                                     Style="@(showMarkerFilterMode ? "" : "opacity: 0.5;")" />
+                        </MudButton>
+                    </MudTooltip>
+                </div>
 
                 <!-- Go to Ping Button (floating) - positioned at top center of map area, only shown when there are active pings -->
                 @if (hasActivePing)
@@ -156,7 +232,10 @@
                              OnCustomMarkerContextMenu="@HandleCustomMarkerContextMenu"
                              OnMapRightClick="@HandleMapRightClick"
                              OnMapInitialized="@HandleMapInitialized"
-                             OnMapChanged="@HandleMapChanged" />
+                             OnMapChanged="@HandleMapChanged"
+                             OnRequestOverlays="@HandleRequestOverlays"
+                             OnRoadDrawingComplete="@HandleRoadDrawingComplete"
+                             OnRoadContextMenu="@HandleRoadContextMenu" />
                 </div>
             </MudMainContent>
         </MudDrawerContainer>
@@ -195,25 +274,67 @@
                                      OnDelete="@(() => HandleDeleteCustomMarker(contextCustomMarkerId))" />
         }
 
-        <!-- Map Action Context Menu (for Create Marker/Ping) -->
+        <!-- Map Action Context Menu (for Create Marker/Ping/Draw Road OR Drawing Mode options) -->
         @if (showMapActionMenu && hasMarkersPermission)
         {
             <MudPaper Class="context-menu" Style="@($"position: fixed; left: {contextMenuX}px; top: {contextMenuY}px; z-index: 2000;")" Elevation="8">
-                <MudList Clickable="true" Dense="true" T="string">
-                    <MudListItem OnClick="@HandleCreateCustomMarkerFromMenu" T="string">
-                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
-                            <MudIcon Icon="@Icons.Material.Filled.AddLocation" Size="Size.Small" Color="Color.Success" />
-                            <MudText>Create Custom Marker</MudText>
-                        </MudStack>
-                    </MudListItem>
-                    <MudListItem OnClick="@HandleCreatePingFromMenu" T="string">
-                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
-                            <MudIcon Icon="@Icons.Material.Filled.LocationSearching" Size="Size.Small" Color="Color.Error" />
-                            <MudText>Ping (60s)</MudText>
-                        </MudStack>
-                    </MudListItem>
-                </MudList>
+                @if (isDrawingRoad)
+                {
+                    <!-- Drawing Mode Menu -->
+                    <MudList Clickable="true" Dense="true" T="string">
+                        <MudListItem OnClick="@HandleFinishRoadFromMenu" T="string" Disabled="@(drawingPointsCount < 2)">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="@(drawingPointsCount >= 2 ? Color.Success : Color.Default)" />
+                                <MudText>Finish Road (@drawingPointsCount points)</MudText>
+                            </MudStack>
+                        </MudListItem>
+                        <MudListItem OnClick="@HandleCancelRoadFromMenu" T="string">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Filled.Cancel" Size="Size.Small" Color="Color.Error" />
+                                <MudText>Cancel Drawing</MudText>
+                            </MudStack>
+                        </MudListItem>
+                    </MudList>
+                }
+                else
+                {
+                    <!-- Normal Menu -->
+                    <MudList Clickable="true" Dense="true" T="string">
+                        <MudListItem OnClick="@HandleCreateCustomMarkerFromMenu" T="string">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Filled.AddLocation" Size="Size.Small" Color="Color.Success" />
+                                <MudText>Create Custom Marker</MudText>
+                            </MudStack>
+                        </MudListItem>
+                        <MudListItem OnClick="@HandleCreatePingFromMenu" T="string">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Filled.LocationSearching" Size="Size.Small" Color="Color.Error" />
+                                <MudText>Ping (60s)</MudText>
+                            </MudStack>
+                        </MudListItem>
+                        <MudDivider />
+                        <MudListItem OnClick="@HandleStartDrawRoadFromMenu" T="string">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Filled.Timeline" Size="Size.Small" Color="Color.Warning" />
+                                <MudText>Draw Road</MudText>
+                            </MudStack>
+                        </MudListItem>
+                    </MudList>
+                }
             </MudPaper>
+        }
+
+        <!-- Road Context Menu -->
+        @if (showRoadContextMenu && hasMarkersPermission)
+        {
+            <RoadContextMenu Visible="@showRoadContextMenu"
+                             Left="@contextMenuX"
+                             Top="@contextMenuY"
+                             RoadId="@contextRoadId"
+                             CanEdit="@contextRoadCanEdit"
+                             OnJumpTo="@(() => HandleJumpToRoad(contextRoadId))"
+                             OnEdit="@(() => HandleEditRoad(contextRoadId))"
+                             OnDelete="@(() => HandleDeleteRoad(contextRoadId))" />
         }
     }
 </div>

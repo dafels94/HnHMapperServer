@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HnHMapperServer.Core.Interfaces;
 using HnHMapperServer.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
@@ -24,18 +25,30 @@ public class InvitationExpirationService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Randomized startup delay to prevent all services starting simultaneously
+        var startupDelay = TimeSpan.FromSeconds(Random.Shared.Next(0, 60));
+        _logger.LogInformation("Invitation Expiration Service starting in {Delay:F1}s", startupDelay.TotalSeconds);
+        await Task.Delay(startupDelay, stoppingToken);
+
         _logger.LogInformation("Invitation Expiration Service started");
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var sw = Stopwatch.StartNew();
             try
             {
+                _logger.LogInformation("Invitation expiration job started");
+
                 await ProcessExpiredInvitationsAsync();
                 await RemovePendingUsersAfter7DaysAsync();
+
+                sw.Stop();
+                _logger.LogInformation("Invitation expiration job completed in {ElapsedMs}ms", sw.ElapsedMilliseconds);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing invitation expiration");
+                sw.Stop();
+                _logger.LogError(ex, "Error processing invitation expiration after {ElapsedMs}ms", sw.ElapsedMilliseconds);
             }
 
             await Task.Delay(_interval, stoppingToken);

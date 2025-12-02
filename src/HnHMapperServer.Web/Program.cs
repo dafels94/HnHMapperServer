@@ -26,6 +26,9 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
     // Disable MinResponseDataRate to prevent SignalR circuit timeouts
     // SignalR has its own keep-alive mechanism (default 15 seconds)
     serverOptions.Limits.MinResponseDataRate = null;
+
+    // Allow large file uploads for .hmap import (up to 1GB)
+    serverOptions.Limits.MaxRequestBodySize = 1024L * 1024 * 1024; // 1GB
 });
 
 // Configure ImageSharp for better resource management during zoom tile generation
@@ -124,8 +127,9 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 // This fixes "The maximum message size of 32768B was exceeded" errors
 builder.Services.AddSignalR(options =>
 {
-    // Increase max message size from 32KB to 1MB for large marker/map payloads
-    options.MaximumReceiveMessageSize = 1024 * 1024; // 1MB
+    // Increase max message size for large file uploads (.hmap files can be 500MB+)
+    // In Blazor Server, IBrowserFile streams go through SignalR
+    options.MaximumReceiveMessageSize = 1024L * 1024 * 1024; // 1GB
 
     // Increase parallel invocations to handle multiple concurrent JS interop calls
     options.MaximumParallelInvocationsPerClient = 10; // Default is 1
@@ -310,9 +314,26 @@ builder.Logging.AddConsole().Services.BuildServiceProvider()
     .GetRequiredService<ILogger<Program>>()
     .LogInformation("API HttpClient BaseAddress: {ApiBaseUrl}", apiBaseUrl);
 
+// Standard API client WITH resilience (retries, circuit breaker, timeouts)
+// Used for regular API calls that don't involve streaming uploads
 builder.Services.AddHttpClient("API", client =>
 {
     client.BaseAddress = new Uri(apiBaseUrl);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    AllowAutoRedirect = false,
+    UseCookies = false
+})
+.AddHttpMessageHandler<HnHMapperServer.Web.Services.AuthenticationDelegatingHandler>()
+.AddStandardResilienceHandler();
+
+// File upload client WITHOUT resilience - streams cannot be retried
+// Used only for .hmap imports and other large file uploads
+builder.Services.AddHttpClient("APIUpload", client =>
+{
+    client.BaseAddress = new Uri(apiBaseUrl);
+    client.Timeout = TimeSpan.FromMinutes(45);
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {
@@ -603,10 +624,6 @@ app.MapGet("/map/grids/{**path}", async (
       .SetVaryByQuery("v", "cache")      // Vary by revision and cache-bust params
       .SetVaryByRouteValue("path")       // Vary by tile path (mapId/zoom/x_y)
       .Tag("tiles"));                     // Tag for bulk invalidation if needed
-
-// Blazor initializers endpoint - returns empty array (no custom initializers needed)
-// This prevents 404 errors in browser console when Blazor tries to fetch initializers
-app.MapGet("/_blazor/initializers", () => Results.Json(Array.Empty<object>()));
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();

@@ -37,7 +37,7 @@ public class MarkerModel
             if (Image == "gfx/invobjs/small/bush" ||
                 Image == "gfx/invobjs/small/bumling" ||
                 Image == "gfx/terobjs/mm/gianttoad")
-                return "quest";
+                return "questgiver";
 
             if (Image == "gfx/terobjs/mm/thingwall")
                 return "thingwall";

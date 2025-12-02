@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HnHMapperServer.Core.Interfaces;
 using HnHMapperServer.Services.Interfaces;
 
@@ -26,6 +27,11 @@ public class MapCleanupService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Randomized startup delay to prevent all services starting simultaneously
+        var startupDelay = TimeSpan.FromSeconds(Random.Shared.Next(0, 60));
+        _logger.LogInformation("Map Cleanup Service starting in {Delay:F1}s", startupDelay.TotalSeconds);
+        await Task.Delay(startupDelay, stoppingToken);
+
         // Read configuration with defaults
         var deleteAfterMinutes = _configuration.GetValue<int>("Cleanup:DeleteEmptyMapsAfterMinutes", 60);
         var cleanupIntervalSeconds = _configuration.GetValue<int>("Cleanup:MapCleanupIntervalSeconds", 600);
@@ -41,6 +47,9 @@ public class MapCleanupService : BackgroundService
             {
                 await Task.Delay(TimeSpan.FromSeconds(cleanupIntervalSeconds), stoppingToken);
 
+                var sw = Stopwatch.StartNew();
+                _logger.LogInformation("Map cleanup job started");
+
                 using var scope = _scopeFactory.CreateScope();
                 var mapRepository = scope.ServiceProvider.GetRequiredService<IMapRepository>();
                 var updateNotificationService = scope.ServiceProvider.GetRequiredService<IUpdateNotificationService>();
@@ -49,12 +58,12 @@ public class MapCleanupService : BackgroundService
                 // Calculate cutoff time
                 var cutoffUtc = DateTime.UtcNow.AddMinutes(-deleteAfterMinutes);
 
-                _logger.LogInformation("Map cleanup check starting (cutoff: {Cutoff:yyyy-MM-dd HH:mm:ss} UTC)", cutoffUtc);
+                _logger.LogDebug("Map cleanup check starting (cutoff: {Cutoff:yyyy-MM-dd HH:mm:ss} UTC)", cutoffUtc);
 
                 // Find empty maps older than cutoff
                 var emptyMapIds = await mapRepository.GetEmptyMapIdsCreatedBeforeAsync(cutoffUtc);
 
-                _logger.LogInformation("Map cleanup check found {Count} empty map(s) to delete", emptyMapIds.Count);
+                _logger.LogDebug("Map cleanup check found {Count} empty map(s) to delete", emptyMapIds.Count);
 
                 if (emptyMapIds.Count > 0)
                 {
@@ -102,6 +111,9 @@ public class MapCleanupService : BackgroundService
                         }
                     }
                 }
+
+                sw.Stop();
+                _logger.LogInformation("Map cleanup job completed in {ElapsedMs}ms", sw.ElapsedMilliseconds);
             }
             catch (OperationCanceledException)
             {

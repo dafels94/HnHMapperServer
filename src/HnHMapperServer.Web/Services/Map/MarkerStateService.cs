@@ -114,42 +114,59 @@ public class MarkerStateService
 
     /// <summary>
     /// Update markers from API response (adds new, updates existing, removes missing)
+    /// Preserves markers from other maps - only modifies markers for the current map
     /// </summary>
     public MarkerUpdateResult UpdateFromApi(List<MarkerModel> apiMarkers, int currentMapId)
     {
         var result = new MarkerUpdateResult();
 
-        // Update existing and add new - ONLY for current map
-        foreach (var marker in apiMarkers.Where(m => !m.Hidden && m.Map == currentMapId))
+        // Get API markers for all maps (for global updates)
+        var apiMarkerIds = apiMarkers.Select(m => m.Id).ToHashSet();
+
+        // Update existing and add new markers across ALL maps
+        foreach (var marker in apiMarkers.Where(m => !m.Hidden))
         {
             var existingIndex = _allMarkers.FindIndex(m => m.Id == marker.Id);
             if (existingIndex >= 0)
             {
                 // Update existing marker
                 _allMarkers[existingIndex] = marker;
-                result.UpdatedMarkers.Add(marker);
+                // Only track visual updates for current map
+                if (marker.Map == currentMapId)
+                {
+                    result.UpdatedMarkers.Add(marker);
+                }
             }
             else
             {
                 // Add new marker
                 _allMarkers.Add(marker);
-                result.AddedMarkers.Add(marker);
+                // Only track visual updates for current map
+                if (marker.Map == currentMapId)
+                {
+                    result.AddedMarkers.Add(marker);
+                }
             }
         }
 
-        // Remove markers that are not on current map or not in the returned list
+        // Remove markers that are no longer in the API response (deleted on server)
+        // This preserves markers from ALL maps, only removing truly deleted ones
         var toRemove = _allMarkers
-            .Where(m => m.Map != currentMapId || !apiMarkers.Any(n => n.Id == m.Id))
+            .Where(m => !apiMarkerIds.Contains(m.Id))
             .ToList();
 
         foreach (var marker in toRemove)
         {
             _allMarkers.Remove(marker);
-            result.RemovedMarkerIds.Add(marker.Id);
+            // Only track visual updates for current map
+            if (marker.Map == currentMapId)
+            {
+                result.RemovedMarkerIds.Add(marker.Id);
+            }
         }
 
-        _logger.LogDebug("Marker update: {Added} added, {Updated} updated, {Removed} removed",
-            result.AddedMarkers.Count, result.UpdatedMarkers.Count, result.RemovedMarkerIds.Count);
+        _logger.LogDebug("Marker update: {Added} added, {Updated} updated, {Removed} removed (for map {MapId})",
+            result.AddedMarkers.Count, result.UpdatedMarkers.Count, result.RemovedMarkerIds.Count, currentMapId);
 
         return result;
     }

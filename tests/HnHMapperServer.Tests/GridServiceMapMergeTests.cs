@@ -8,6 +8,7 @@ using HnHMapperServer.Services.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Moq;
+using ITenantContextAccessor = HnHMapperServer.Core.Interfaces.ITenantContextAccessor;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
@@ -58,24 +59,31 @@ public class GridServiceMapMergeTests : IDisposable
         Directory.CreateDirectory(_testGridStorage);
         Directory.CreateDirectory(Path.Combine(_testGridStorage, "grids"));
 
+        // Mock tenant context accessor
+        var mockTenantContext = new Mock<ITenantContextAccessor>();
+        mockTenantContext.Setup(x => x.GetCurrentTenantId()).Returns("default-tenant-1");
+        mockTenantContext.Setup(x => x.GetRequiredTenantId()).Returns("default-tenant-1");
+
         // Initialize repositories
-        _gridRepository = new GridRepository(_dbContext);
-        _mapRepository = new MapRepository(_dbContext);
-        _tileRepository = new TileRepository(_dbContext);
-        _configRepository = new ConfigRepository(_dbContext);
+        _gridRepository = new GridRepository(_dbContext, mockTenantContext.Object);
+        _mapRepository = new MapRepository(_dbContext, mockTenantContext.Object);
+        _tileRepository = new TileRepository(_dbContext, mockTenantContext.Object);
+        _configRepository = new ConfigRepository(_dbContext, mockTenantContext.Object);
 
         // Initialize services with mocked loggers and notification service
         var tileLogger = new Mock<ILogger<TileService>>();
         var gridLogger = new Mock<ILogger<GridService>>();
         var mockNotificationService = new Mock<IUpdateNotificationService>();
         var mockQuotaService = new Mock<IStorageQuotaService>();
+        var mockMapNameService = new Mock<IMapNameService>();
 
         _tileService = new TileService(
             _tileRepository,
             _gridRepository,
             mockNotificationService.Object,
             mockQuotaService.Object,
-            tileLogger.Object);
+            tileLogger.Object,
+            _dbContext);
 
         _gridService = new GridService(
             _gridRepository,
@@ -83,6 +91,8 @@ public class GridServiceMapMergeTests : IDisposable
             _tileService,
             _configRepository,
             mockNotificationService.Object,
+            mockMapNameService.Object,
+            mockTenantContext.Object,
             gridLogger.Object);
 
         // Seed default configuration

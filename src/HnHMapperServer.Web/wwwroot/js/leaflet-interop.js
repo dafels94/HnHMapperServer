@@ -8,6 +8,8 @@ import * as CharacterManager from './map/character-manager.js';
 import * as MarkerManager from './map/marker-manager.js';
 import * as CustomMarkerManager from './map/custom-marker-manager.js';
 import * as PingManager from './map/ping-manager.js';
+import * as OverlayLayer from './map/overlay-layer.js';
+import * as RoadManager from './map/road-manager.js';
 
 // Grid Coordinate Layer
 L.GridLayer.GridCoord = L.GridLayer.extend({
@@ -44,6 +46,7 @@ let coordLayer = null;
 let markerLayer = null;
 let detailedMarkerLayer = null;
 let customMarkerLayer = null;
+let roadLayer = null;
 let currentMapId = 0;
 
 // Debounce timer for zoom operations to reduce excessive tile requests during rapid zoom
@@ -75,21 +78,26 @@ function invokeDotNetSafe(method, ...args) {
                 return null;
             }
 
-            return promise.catch(err => {
+            return promise
+                .then(result => {
+                    console.log('[Leaflet] JS->.NET call succeeded:', method);
+                    return result;
+                })
+                .catch(err => {
                 // Specifically catch "No interop methods are registered for renderer X" error
                 // This happens when map events fire before Blazor circuit finishes initialization
                 if (err && err.message) {
                     if (err.message.includes('No interop methods')) {
-                        console.debug('[Leaflet] Circuit not ready, dropping call:', method);
+                        console.warn('[Leaflet] Circuit not ready, dropping call:', method);
                         return null;
                     }
                     if (err.message.includes('Cannot send data') || err.message.includes('not in the') || err.message.includes('Connected')) {
-                        console.debug('[Leaflet] SignalR not connected yet, dropping call:', method);
+                        console.warn('[Leaflet] SignalR not connected yet, dropping call:', method);
                         return null;
                     }
                 }
-                // For other errors, just log and swallow (don't crash circuit)
-                console.debug('[Leaflet] Error during JS->.NET call (swallowed):', method, err.message || err);
+                // For other errors, log as error so we see them
+                console.error('[Leaflet] Error during JS->.NET call:', method, err.message || err, err);
                 return null;
             });
         } catch (invokeError) {
@@ -192,12 +200,24 @@ export async function initializeMap(mapElementId, dotnetReference) {
     markerLayer = L.layerGroup().addTo(mapInstance);
     detailedMarkerLayer = L.layerGroup().addTo(mapInstance);
     customMarkerLayer = L.layerGroup().addTo(mapInstance);
+    roadLayer = L.layerGroup().addTo(mapInstance);
 
     // Initialize managers
     MarkerManager.setMarkerLayers(markerLayer, detailedMarkerLayer);
     MarkerManager.initializeMarkerManager(invokeDotNetSafe);
     CustomMarkerManager.initializeCustomMarkerManager(customMarkerLayer, invokeDotNetSafe);
     PingManager.initialize(mapInstance);
+    RoadManager.initializeRoadManager(roadLayer, invokeDotNetSafe);
+    RoadManager.setMapInstance(mapInstance);
+
+    // Initialize overlay layer (claims, villages, provinces)
+    // Layer is visible by default with pclaim enabled (controlled by floating buttons)
+    OverlayLayer.initializeOverlayLayer(mapInstance);
+
+    // Set up overlay data request callback to route through Blazor
+    OverlayLayer.setRequestOverlaysCallback((mapId, coords) => {
+        invokeDotNetSafe('JsRequestOverlays', mapId, coords);
+    });
 
     // Keyboard event handler for Alt+M ping shortcut
     let lastMouseLatLng = null;
@@ -523,6 +543,8 @@ export function changeMap(mapId) {
     CharacterManager.setCurrentMapId(mapId);
     MarkerManager.setCurrentMapId(mapId);
     CustomMarkerManager.setCurrentMapId(mapId);
+    OverlayLayer.setOverlayMapId(mapId);
+    RoadManager.setCurrentMapId(mapId);
 
     // Clear all markers to avoid showing markers from previous map
     CharacterManager.clearAllCharacters(mapInstance);
@@ -553,6 +575,8 @@ export function changeMap(mapId) {
     }
 
     CustomMarkerManager.flushCustomMarkerQueue(mapInstance);
+    RoadManager.clearAllRoads();
+    RoadManager.flushRoadQueue(mapInstance);
 
     // Fire mapchanged event to notify C# that map change is complete
     // This replaces arbitrary 50ms delays with proper event-driven architecture
@@ -729,8 +753,11 @@ export function jumpToCharacter(characterId) {
 
 // Marker Management - Delegate to MarkerManager
 export function addMarker(markerData) {
-    console.log('[leaflet-interop] addMarker called, delegating to MarkerManager:', markerData);
     return MarkerManager.addMarker(markerData, mapInstance);
+}
+
+export function addMarkersBatch(markersData) {
+    return MarkerManager.addMarkersBatch(markersData, mapInstance);
 }
 
 export function updateMarker(markerId, markerData) {
@@ -749,8 +776,44 @@ export function toggleMarkerTooltips(type, visible) {
     return MarkerManager.toggleMarkerTooltips(type, visible);
 }
 
+export function setThingwallHighlightEnabled(enabled) {
+    if (!mapInstance) {
+        console.warn('[LeafletInterop] Cannot toggle thingwall highlight - map not initialized');
+        return false;
+    }
+    return MarkerManager.setThingwallHighlightEnabled(enabled, mapInstance);
+}
+
+export function setQuestGiverHighlightEnabled(enabled) {
+    if (!mapInstance) {
+        console.warn('[LeafletInterop] Cannot toggle quest giver highlight - map not initialized');
+        return false;
+    }
+    return MarkerManager.setQuestGiverHighlightEnabled(enabled, mapInstance);
+}
+
+export function setMarkerFilterModeEnabled(enabled) {
+    if (!mapInstance) {
+        console.warn('[LeafletInterop] Cannot toggle marker filter mode - map not initialized');
+        return false;
+    }
+    return MarkerManager.setMarkerFilterModeEnabled(enabled, mapInstance);
+}
+
+export function setJumpConnectionsEnabled(enabled) {
+    if (!mapInstance) {
+        console.warn('[LeafletInterop] Cannot toggle jump connections - map not initialized');
+        return false;
+    }
+    return MarkerManager.setJumpConnectionsEnabled(enabled, mapInstance);
+}
+
 export function jumpToMarker(markerId) {
     return MarkerManager.jumpToMarker(markerId, mapInstance);
+}
+
+export function setHiddenMarkerTypes(types) {
+    return MarkerManager.setHiddenMarkerTypes(types, mapInstance);
 }
 
 // Custom Marker Management - Delegate to CustomMarkerManager
@@ -833,4 +896,95 @@ export function jumpToLatestPing() {
 
 export function getActivePingCount() {
     return PingManager.getActivePingCount();
+}
+
+// Overlay Layer Management - Control claims, villages, provinces display
+export function setClaimOverlayVisible(visible) {
+    OverlayLayer.setOverlayLayerVisible(visible, mapInstance);
+    return true;
+}
+
+export function setOverlayTypeEnabled(overlayType, enabled) {
+    OverlayLayer.setOverlayTypeEnabled(overlayType, enabled);
+    return true;
+}
+
+export function setEnabledOverlayTypes(types) {
+    OverlayLayer.setEnabledOverlayTypes(types);
+    return true;
+}
+
+export function getEnabledOverlayTypes() {
+    return OverlayLayer.getEnabledOverlayTypes();
+}
+
+export function isClaimOverlayVisible() {
+    return OverlayLayer.isOverlayLayerVisible(mapInstance);
+}
+
+export function clearOverlayCache() {
+    OverlayLayer.clearOverlayCache();
+    return true;
+}
+
+export function redrawOverlays() {
+    OverlayLayer.redrawOverlays();
+    return true;
+}
+
+// Receive overlay data from Blazor and pass to overlay layer
+export function setOverlayData(mapId, overlays) {
+    OverlayLayer.setOverlayData(mapId, overlays);
+    return true;
+}
+
+// Invalidate overlay cache at a specific coordinate (called from SSE event)
+export function invalidateOverlayAtCoord(mapId, x, y, overlayType) {
+    OverlayLayer.invalidateOverlayAtCoord(mapId, x, y, overlayType);
+    return true;
+}
+
+// Road Management - Delegate to RoadManager
+export function addRoad(road) {
+    return RoadManager.addRoad(road, mapInstance);
+}
+
+export function updateRoad(roadId, road) {
+    return RoadManager.updateRoad(roadId, road, mapInstance);
+}
+
+export function removeRoad(roadId) {
+    return RoadManager.removeRoad(roadId);
+}
+
+export function clearAllRoads() {
+    return RoadManager.clearAllRoads();
+}
+
+export function toggleRoads(visible) {
+    return RoadManager.toggleRoads(visible, mapInstance);
+}
+
+export function jumpToRoad(roadId) {
+    return RoadManager.jumpToRoad(roadId, mapInstance);
+}
+
+export function startDrawingRoad() {
+    return RoadManager.startDrawingRoad(mapInstance);
+}
+
+export function cancelDrawingRoad() {
+    return RoadManager.cancelDrawingRoad(mapInstance);
+}
+
+export function isInDrawingMode() {
+    return RoadManager.isInDrawingMode();
+}
+
+export function getDrawingPointsCount() {
+    return RoadManager.getDrawingPointsCount();
+}
+
+export function finishDrawingRoadFromMenu() {
+    return RoadManager.finishDrawingRoad(mapInstance);
 }

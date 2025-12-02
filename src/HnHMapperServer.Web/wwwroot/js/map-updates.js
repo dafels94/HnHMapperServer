@@ -224,6 +224,46 @@ function connectSse() {
             }
         });
 
+        // Road created event
+        eventSource.addEventListener('roadCreated', function (event) {
+            try {
+                const road = JSON.parse(event.data);
+                invokeDotNetSafe('OnRoadCreated', road);
+            } catch (e) {
+                console.error('[SSE] Error parsing roadCreated event:', e);
+            }
+        });
+
+        // Road updated event
+        eventSource.addEventListener('roadUpdated', function (event) {
+            try {
+                const road = JSON.parse(event.data);
+                invokeDotNetSafe('OnRoadUpdated', road);
+            } catch (e) {
+                console.error('[SSE] Error parsing roadUpdated event:', e);
+            }
+        });
+
+        // Road deleted event
+        eventSource.addEventListener('roadDeleted', function (event) {
+            try {
+                const deleteInfo = JSON.parse(event.data);
+                invokeDotNetSafe('OnRoadDeleted', deleteInfo);
+            } catch (e) {
+                console.error('[SSE] Error parsing roadDeleted event:', e);
+            }
+        });
+
+        // Overlay updated event
+        eventSource.addEventListener('overlayUpdated', function (event) {
+            try {
+                const overlay = JSON.parse(event.data);
+                invokeDotNetSafe('OnOverlayUpdated', overlay);
+            } catch (e) {
+                console.error('[SSE] Error parsing overlayUpdated event:', e);
+            }
+        });
+
         // Characters snapshot event (initial full state)
         eventSource.addEventListener('charactersSnapshot', function (event) {
             console.warn('[SSE] ===== charactersSnapshot event received =====');

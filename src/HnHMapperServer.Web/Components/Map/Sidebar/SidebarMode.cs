@@ -29,7 +29,12 @@ public enum SidebarMode
     /// <summary>
     /// Events panel - shows active timers, timer history, and allows timer creation
     /// </summary>
-    Events
+    Events,
+
+    /// <summary>
+    /// Roads panel - shows user-drawn roads with filtering and navigation
+    /// </summary>
+    Roads
 }
 
 

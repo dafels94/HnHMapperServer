@@ -47,6 +47,7 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
     public DbSet<ConfigEntity> Config => Set<ConfigEntity>();
     public DbSet<TokenEntity> Tokens => Set<TokenEntity>();
     public DbSet<CustomMarkerEntity> CustomMarkers => Set<CustomMarkerEntity>();
+    public DbSet<RoadEntity> Roads => Set<RoadEntity>();
     public DbSet<PingEntity> Pings => Set<PingEntity>();
 
     // Multi-tenancy tables
@@ -62,6 +63,12 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
     public DbSet<TimerWarningEntity> TimerWarnings => Set<TimerWarningEntity>();
     public DbSet<NotificationPreferenceEntity> NotificationPreferences => Set<NotificationPreferenceEntity>();
     public DbSet<TimerHistoryEntity> TimerHistory => Set<TimerHistoryEntity>();
+
+    // Overlay data tables
+    public DbSet<OverlayDataEntity> OverlayData => Set<OverlayDataEntity>();
+
+    // Performance optimization tables
+    public DbSet<DirtyZoomTileEntity> DirtyZoomTiles => Set<DirtyZoomTileEntity>();
 
     // Cookbook tables
     public DbSet<FoodEntity> Foods => Set<FoodEntity>();
@@ -127,6 +134,11 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
 
             entity.HasIndex(e => new { e.MapId, e.Zoom, e.CoordX, e.CoordY }).IsUnique();
             entity.HasIndex(e => e.TenantId);
+
+            // Optimized indexes for ZoomTileRebuildService queries
+            // Supports FindMissingZoomTilesAsync and FindStaleZoomTilesAsync
+            entity.HasIndex(e => new { e.TenantId, e.Zoom });
+            entity.HasIndex(e => new { e.TenantId, e.MapId, e.Zoom });
 
             // Foreign key to Tenants
             entity.HasOne<TenantEntity>()
@@ -271,6 +283,48 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
                 .WithMany()
                 .HasForeignKey(e => new { e.GridId, e.TenantId })
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // Foreign key to MapInfoEntity
+            entity.HasOne<MapInfoEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.MapId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Foreign key to Tenants
+            entity.HasOne<TenantEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.TenantId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<RoadEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.Name)
+                .HasMaxLength(80)
+                .IsRequired();
+
+            entity.Property(e => e.Waypoints)
+                .IsRequired();
+
+            entity.Property(e => e.CreatedBy)
+                .IsRequired();
+
+            entity.Property(e => e.CreatedAt)
+                .IsRequired();
+
+            entity.Property(e => e.UpdatedAt)
+                .IsRequired();
+
+            entity.Property(e => e.TenantId)
+                .IsRequired();
+
+            entity.HasIndex(e => e.MapId);
+            entity.HasIndex(e => e.CreatedBy);
+            entity.HasIndex(e => e.TenantId);
+            entity.HasIndex(e => new { e.MapId, e.CreatedAt })
+                .HasAnnotation("Sqlite:IndexColumnOrder", new[] { "ASC", "DESC" });
 
             // Foreign key to MapInfoEntity
             entity.HasOne<MapInfoEntity>()
@@ -581,6 +635,72 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<OverlayDataEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.MapId).IsRequired();
+            entity.Property(e => e.CoordX).IsRequired();
+            entity.Property(e => e.CoordY).IsRequired();
+            entity.Property(e => e.OverlayType).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.Data).IsRequired();
+            entity.Property(e => e.TenantId).IsRequired();
+            entity.Property(e => e.UpdatedAt).IsRequired();
+
+            // Unique index for (MapId, CoordX, CoordY, OverlayType, TenantId)
+            entity.HasIndex(e => new { e.MapId, e.CoordX, e.CoordY, e.OverlayType, e.TenantId }).IsUnique();
+            entity.HasIndex(e => e.TenantId);
+            entity.HasIndex(e => e.MapId);
+
+            // Covering index for overlay queries - optimized for GetOverlaysForGridsAsync
+            // Covers: TenantId (filter), MapId (filter), CoordX + CoordY (range lookups)
+            entity.HasIndex(e => new { e.TenantId, e.MapId, e.CoordX, e.CoordY });
+
+            // Foreign key to Tenants
+            entity.HasOne<TenantEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.TenantId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Foreign key to MapInfoEntity
+            entity.HasOne<MapInfoEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.MapId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<DirtyZoomTileEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.TenantId).IsRequired();
+            entity.Property(e => e.MapId).IsRequired();
+            entity.Property(e => e.CoordX).IsRequired();
+            entity.Property(e => e.CoordY).IsRequired();
+            entity.Property(e => e.Zoom).IsRequired();
+            entity.Property(e => e.CreatedAt).IsRequired();
+
+            // Unique index: Only one dirty tile entry per (Tenant, Map, Coord, Zoom)
+            // This ensures upserts can use "ON CONFLICT IGNORE" semantics
+            entity.HasIndex(e => new { e.TenantId, e.MapId, e.CoordX, e.CoordY, e.Zoom }).IsUnique();
+
+            // Index for efficient tenant queries (used by ZoomTileRebuildService)
+            entity.HasIndex(e => e.TenantId);
+
+            // Composite index for ordered processing
+            entity.HasIndex(e => new { e.TenantId, e.Zoom, e.MapId });
+
+            // Foreign key to Tenants
+            entity.HasOne<TenantEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.TenantId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Foreign key to Maps
+            entity.HasOne<MapInfoEntity>()
+                .WithMany()
+                .HasForeignKey(e => e.MapId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         // Cookbook entity configurations
         modelBuilder.Entity<FoodEntity>(entity =>
         {
@@ -754,6 +874,9 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
         modelBuilder.Entity<CustomMarkerEntity>()
             .HasQueryFilter(c => c.TenantId == GetCurrentTenantId());
 
+        modelBuilder.Entity<RoadEntity>()
+            .HasQueryFilter(r => r.TenantId == GetCurrentTenantId());
+
         modelBuilder.Entity<PingEntity>()
             .HasQueryFilter(p => p.TenantId == GetCurrentTenantId());
 
@@ -771,6 +894,9 @@ public sealed class ApplicationDbContext : IdentityDbContext<IdentityUser, Ident
 
         modelBuilder.Entity<TimerHistoryEntity>()
             .HasQueryFilter(t => t.TenantId == GetCurrentTenantId());
+
+        modelBuilder.Entity<OverlayDataEntity>()
+            .HasQueryFilter(o => o.TenantId == GetCurrentTenantId());
 
         // Cookbook query filters - hybrid tenancy (global + tenant-specific)
         // Foods: Show global recipes (TenantId IS NULL) OR tenant-specific recipes
@@ -951,6 +1077,58 @@ public sealed class CustomMarkerEntity
 
     /// <summary>
     /// Whether the marker is hidden
+    /// </summary>
+    public bool Hidden { get; set; }
+
+    /// <summary>
+    /// Tenant ID for multi-tenancy isolation
+    /// </summary>
+    public string TenantId { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Represents a road/path created by users on the map
+/// </summary>
+public sealed class RoadEntity
+{
+    /// <summary>
+    /// Primary key
+    /// </summary>
+    public int Id { get; set; }
+
+    /// <summary>
+    /// Foreign key to MapInfoEntity
+    /// </summary>
+    public int MapId { get; set; }
+
+    /// <summary>
+    /// Road name (max 80 characters)
+    /// </summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Waypoints as JSON array of coordinate objects
+    /// Format: [{"coordX": 5, "coordY": 10, "x": 50, "y": 25}, ...]
+    /// </summary>
+    public string Waypoints { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Username of the creator (from ASP.NET Identity)
+    /// </summary>
+    public string CreatedBy { get; set; } = string.Empty;
+
+    /// <summary>
+    /// UTC timestamp when the road was created
+    /// </summary>
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// UTC timestamp when the road was last updated
+    /// </summary>
+    public DateTime UpdatedAt { get; set; }
+
+    /// <summary>
+    /// Whether the road is hidden
     /// </summary>
     public bool Hidden { get; set; }
 
@@ -1277,4 +1455,94 @@ public sealed class TimerWarningEntity
     /// UTC timestamp when the warning was sent
     /// </summary>
     public DateTime SentAt { get; set; }
+}
+
+/// <summary>
+/// Tracks zoom tiles that need rebuilding after base tile uploads.
+/// Instead of scanning all tiles to find stale ones, we mark dirty tiles on upload.
+/// </summary>
+public sealed class DirtyZoomTileEntity
+{
+    /// <summary>
+    /// Primary key
+    /// </summary>
+    public int Id { get; set; }
+
+    /// <summary>
+    /// Tenant ID for multi-tenancy isolation
+    /// </summary>
+    public string TenantId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Map ID the tile belongs to
+    /// </summary>
+    public int MapId { get; set; }
+
+    /// <summary>
+    /// Tile coordinate X (at the given zoom level)
+    /// </summary>
+    public int CoordX { get; set; }
+
+    /// <summary>
+    /// Tile coordinate Y (at the given zoom level)
+    /// </summary>
+    public int CoordY { get; set; }
+
+    /// <summary>
+    /// Zoom level (1-6)
+    /// </summary>
+    public int Zoom { get; set; }
+
+    /// <summary>
+    /// When the tile was marked dirty (for debugging/monitoring)
+    /// </summary>
+    public DateTime CreatedAt { get; set; }
+}
+
+/// <summary>
+/// Stores overlay data (claims, villages, provinces) for a grid coordinate
+/// Data is bitpacked: 1250 bytes for 100x100 tiles, 1 bit per tile
+/// </summary>
+public sealed class OverlayDataEntity
+{
+    /// <summary>
+    /// Primary key
+    /// </summary>
+    public int Id { get; set; }
+
+    /// <summary>
+    /// Foreign key to MapInfoEntity
+    /// </summary>
+    public int MapId { get; set; }
+
+    /// <summary>
+    /// Grid coordinate X
+    /// </summary>
+    public int CoordX { get; set; }
+
+    /// <summary>
+    /// Grid coordinate Y
+    /// </summary>
+    public int CoordY { get; set; }
+
+    /// <summary>
+    /// Overlay type (e.g., "ClaimFloor", "VillageOutline", "Province0")
+    /// </summary>
+    public string OverlayType { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Bitpacked overlay data (1250 bytes for 100x100 grid, LSB first)
+    /// Each bit represents whether the overlay is present at that tile position.
+    /// </summary>
+    public byte[] Data { get; set; } = Array.Empty<byte>();
+
+    /// <summary>
+    /// Tenant ID for multi-tenancy isolation
+    /// </summary>
+    public string TenantId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// UTC timestamp when the overlay data was last updated
+    /// </summary>
+    public DateTime UpdatedAt { get; set; }
 }

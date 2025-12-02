@@ -12,6 +12,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using HnHMapperServer.Core.Extensions;
 using HnHMapperServer.Core.Constants;
 
@@ -30,6 +31,7 @@ public static class MapEndpoints
 
         group.MapGet("/v1/characters", GetCharacters);
         group.MapGet("/v1/markers", GetMarkers);
+        group.MapGet("/v1/overlays", GetOverlays);
         group.MapGet("/config", GetConfig);
         group.MapGet("/maps", GetMaps);
         group.MapPost("/admin/wipeTile", WipeTile);
@@ -115,6 +117,95 @@ public static class MapEndpoints
 
         var markers = await markerService.GetAllFrontendMarkersAsync();
         return Results.Json(markers);
+    }
+
+    /// <summary>
+    /// Get overlay data (claims, villages, provinces) for visible grid coordinates.
+    /// Query params:
+    ///   mapId: The map ID
+    ///   coords: Comma-separated list of x_y coordinates (e.g., "10_20,11_20,12_20")
+    /// Returns array of overlay data with base64-encoded bitpacked data.
+    /// Uses in-memory caching (30 min TTL) to reduce database load.
+    /// </summary>
+    private static async Task<IResult> GetOverlays(
+        HttpContext context,
+        [FromQuery] int mapId,
+        [FromQuery] string? coords,
+        IOverlayDataRepository overlayRepository,
+        IMemoryCache cache,
+        ILogger<Program> logger)
+    {
+        if (!context.User.Identity?.IsAuthenticated ?? true)
+            return Results.Unauthorized();
+
+        // Map permission already enforced by TenantMapAccess policy
+
+        if (string.IsNullOrWhiteSpace(coords))
+            return Results.Json(new List<object>());
+
+        // Parse coordinates (format: "x1_y1,x2_y2,x3_y3")
+        var coordList = new List<(int X, int Y)>();
+        foreach (var coordStr in coords.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = coordStr.Trim().Split('_');
+            if (parts.Length == 2 && int.TryParse(parts[0], out var x) && int.TryParse(parts[1], out var y))
+            {
+                coordList.Add((x, y));
+            }
+        }
+
+        if (coordList.Count == 0)
+            return Results.Json(new List<object>());
+
+        // Limit to prevent abuse (max 100 grids per request)
+        if (coordList.Count > 100)
+        {
+            coordList = coordList.Take(100).ToList();
+            logger.LogWarning("GetOverlays: Truncated coordinate list to 100 items");
+        }
+
+        // Extract tenant ID for cache key
+        var tenantId = context.Items["TenantId"] as string ?? string.Empty;
+
+        // Build cache key from tenant, map, and sorted coordinates
+        // Sort coords to ensure consistent cache keys regardless of request order
+        var sortedCoords = coordList.OrderBy(c => c.X).ThenBy(c => c.Y).ToList();
+        var coordsKey = string.Join(",", sortedCoords.Select(c => $"{c.X}_{c.Y}"));
+        var cacheKey = $"overlays:{tenantId}:{mapId}:{coordsKey}";
+
+        // Try to get from cache first
+        if (cache.TryGetValue(cacheKey, out List<object>? cachedResponse) && cachedResponse != null)
+        {
+            logger.LogDebug("GetOverlays: Cache hit for {CoordCount} coords on map {MapId}", coordList.Count, mapId);
+            return Results.Json(cachedResponse);
+        }
+
+        // Cache miss - fetch from database
+        var overlays = await overlayRepository.GetOverlaysForGridsAsync(mapId, coordList);
+
+        // Transform to API response format with base64-encoded data
+        var response = overlays.Select(o => new
+        {
+            MapId = o.MapId,
+            X = o.Coord.X,
+            Y = o.Coord.Y,
+            Type = o.OverlayType,
+            Data = Convert.ToBase64String(o.Data),
+            UpdatedAt = o.UpdatedAt
+        }).Cast<object>().ToList();
+
+        // Cache for 30 minutes with sliding expiration
+        var cacheOptions = new MemoryCacheEntryOptions()
+            .SetSlidingExpiration(TimeSpan.FromMinutes(30))
+            .SetAbsoluteExpiration(TimeSpan.FromHours(2)) // Hard cap at 2 hours
+            .SetSize(response.Count + 1); // Size based on number of overlays
+
+        cache.Set(cacheKey, response, cacheOptions);
+
+        logger.LogDebug("GetOverlays: Cache miss for {CoordCount} coords on map {MapId}, found {OverlayCount} overlays",
+            coordList.Count, mapId, response.Count);
+
+        return Results.Json(response);
     }
 
     private static async Task<IResult> GetConfig(
@@ -431,6 +522,10 @@ public static class MapEndpoints
         var customMarkerDeleted = updateNotificationService.SubscribeToCustomMarkerDeleted();
         var pingCreated = updateNotificationService.SubscribeToPingCreated();
         var pingDeleted = updateNotificationService.SubscribeToPingDeleted();
+        var roadCreated = updateNotificationService.SubscribeToRoadCreated();
+        var roadUpdated = updateNotificationService.SubscribeToRoadUpdated();
+        var roadDeleted = updateNotificationService.SubscribeToRoadDeleted();
+        var overlayUpdated = updateNotificationService.SubscribeToOverlayUpdated();
         var notificationCreated = updateNotificationService.SubscribeToNotificationCreated();
         var notificationRead = updateNotificationService.SubscribeToNotificationRead();
         var notificationDismissed = updateNotificationService.SubscribeToNotificationDismissed();
@@ -602,6 +697,55 @@ public static class MapEndpoints
                         var deleteDto = new { Id = pingDeleteEvent.Id };
                         var deleteJson = JsonSerializer.Serialize(deleteDto, jsonOptions);
                         await context.Response.WriteAsync($"event: pingDeleted\ndata: {deleteJson}\n\n");
+                        await context.Response.Body.FlushAsync();
+                    }
+                }
+
+                // Check for road creation events
+                // SECURITY: Filter by tenant to prevent cross-tenant road visibility
+                while (roadCreated.TryRead(out var road))
+                {
+                    if (road.TenantId == tenantId)
+                    {
+                        var roadJson = JsonSerializer.Serialize(road, jsonOptions);
+                        await context.Response.WriteAsync($"event: roadCreated\ndata: {roadJson}\n\n");
+                        await context.Response.Body.FlushAsync();
+                    }
+                }
+
+                // Check for road update events
+                // SECURITY: Filter by tenant to prevent cross-tenant road visibility
+                while (roadUpdated.TryRead(out var updatedRoad))
+                {
+                    if (updatedRoad.TenantId == tenantId)
+                    {
+                        var roadJson = JsonSerializer.Serialize(updatedRoad, jsonOptions);
+                        await context.Response.WriteAsync($"event: roadUpdated\ndata: {roadJson}\n\n");
+                        await context.Response.Body.FlushAsync();
+                    }
+                }
+
+                // Check for road deletion events
+                // SECURITY: Filter by tenant to prevent cross-tenant road visibility
+                while (roadDeleted.TryRead(out var roadDeleteEvent))
+                {
+                    if (roadDeleteEvent.TenantId == tenantId)
+                    {
+                        var deleteDto = new { Id = roadDeleteEvent.Id };
+                        var deleteJson = JsonSerializer.Serialize(deleteDto, jsonOptions);
+                        await context.Response.WriteAsync($"event: roadDeleted\ndata: {deleteJson}\n\n");
+                        await context.Response.Body.FlushAsync();
+                    }
+                }
+
+                // Check for overlay update events
+                // SECURITY: Filter by tenant to prevent cross-tenant overlay visibility
+                while (overlayUpdated.TryRead(out var overlay))
+                {
+                    if (overlay.TenantId == tenantId)
+                    {
+                        var overlayJson = JsonSerializer.Serialize(overlay, jsonOptions);
+                        await context.Response.WriteAsync($"event: overlayUpdated\ndata: {overlayJson}\n\n");
                         await context.Response.Body.FlushAsync();
                     }
                 }

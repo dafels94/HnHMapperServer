@@ -1,4 +1,4 @@
-using HnHMapperServer.Core.DTOs;
+using System.Diagnostics;
 using HnHMapperServer.Infrastructure.Data;
 using HnHMapperServer.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -32,6 +32,11 @@ public class TenantStorageVerificationService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Randomized startup delay to prevent all services starting simultaneously
+        var startupDelay = TimeSpan.FromSeconds(Random.Shared.Next(0, 60));
+        _logger.LogInformation("TenantStorageVerificationService starting in {Delay:F1}s", startupDelay.TotalSeconds);
+        await Task.Delay(startupDelay, stoppingToken);
+
         _logger.LogInformation("TenantStorageVerificationService started. Interval: {Interval}", _verificationInterval);
 
         // Wait 1 hour before first run (let system stabilize after startup)
@@ -57,17 +62,19 @@ public class TenantStorageVerificationService : BackgroundService
 
     private async Task VerifyAllTenantsAsync(CancellationToken cancellationToken)
     {
+        var sw = Stopwatch.StartNew();
+        _logger.LogInformation("Storage verification job started");
+
         using var scope = _serviceProvider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var quotaService = scope.ServiceProvider.GetRequiredService<IStorageQuotaService>();
-        var auditService = scope.ServiceProvider.GetRequiredService<IAuditService>();
 
         var tenants = await db.Tenants
             .IgnoreQueryFilters()
             .Where(t => t.IsActive)
             .ToListAsync(cancellationToken);
 
-        _logger.LogInformation("Starting storage verification for {Count} active tenants", tenants.Count);
+        _logger.LogDebug("Starting storage verification for {Count} active tenants", tenants.Count);
 
         foreach (var tenant in tenants)
         {
@@ -76,7 +83,7 @@ public class TenantStorageVerificationService : BackgroundService
 
             try
             {
-                await VerifyTenantAsync(tenant.Id, db, quotaService, auditService);
+                await VerifyTenantAsync(tenant.Id, db, quotaService);
             }
             catch (Exception ex)
             {
@@ -84,92 +91,89 @@ public class TenantStorageVerificationService : BackgroundService
             }
         }
 
-        _logger.LogInformation("Storage verification complete");
+        sw.Stop();
+        _logger.LogInformation("Storage verification job completed in {ElapsedMs}ms for {Count} tenants", sw.ElapsedMilliseconds, tenants.Count);
     }
 
-    private async Task VerifyTenantAsync(string tenantId, ApplicationDbContext db, IStorageQuotaService quotaService, IAuditService auditService)
+    private async Task VerifyTenantAsync(string tenantId, ApplicationDbContext db, IStorageQuotaService quotaService)
     {
-        // Calculate from database: SUM(FileSizeBytes)
-        var dbUsageBytes = await db.Tiles
-            .IgnoreQueryFilters()
-            .Where(t => t.TenantId == tenantId)
-            .SumAsync(t => (long)t.FileSizeBytes);
-        var dbUsageMB = dbUsageBytes / 1024.0 / 1024.0;
-
-        // Calculate from filesystem
+        // Calculate from filesystem - single pass for both count and size
         var tenantDir = Path.Combine(_gridStorage, "tenants", tenantId);
-        var fsUsageBytes = CalculateDirectorySize(tenantDir);
+        var (fileCount, fsUsageBytes) = CalculateDirectorySizeAndCount(tenantDir);
         var fsUsageMB = fsUsageBytes / 1024.0 / 1024.0;
 
-        // Compare
-        var diffMB = Math.Abs(dbUsageMB - fsUsageMB);
+        // Get current tracked value
+        var tenant = await db.Tenants
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(t => t.Id == tenantId);
 
-        if (diffMB > 10) // More than 10 MB difference
+        if (tenant != null)
         {
-            _logger.LogWarning(
-                "Storage discrepancy detected for tenant {TenantId}: DB={DbMB:F2}MB, FS={FsMB:F2}MB, Diff={DiffMB:F2}MB",
-                tenantId, dbUsageMB, fsUsageMB, diffMB);
+            var oldUsage = tenant.CurrentStorageMB;
+            var diffMB = Math.Abs(oldUsage - fsUsageMB);
 
-            // Update to filesystem value (filesystem is source of truth)
-            var tenant = await db.Tenants
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(t => t.Id == tenantId);
-
-            if (tenant != null)
+            // Update if there's a significant difference (> 1 MB)
+            if (diffMB > 1)
             {
-                var oldUsage = tenant.CurrentStorageMB;
-                tenant.CurrentStorageMB = fsUsageMB;
-                await db.SaveChangesAsync();
-
                 _logger.LogInformation(
                     "Updated tenant {TenantId} storage usage: {OldMB:F2}MB → {NewMB:F2}MB",
                     tenantId, oldUsage, fsUsageMB);
-
-                // Log storage discrepancy to audit table
-                await auditService.LogAsync(new AuditEntry
-                {
-                    TenantId = tenantId,
-                    UserId = null, // System action
-                    Action = "StorageDiscrepancyDetected",
-                    EntityType = "Tenant",
-                    EntityId = tenantId,
-                    OldValue = $"{oldUsage:F2} MB (DB tracked)",
-                    NewValue = $"{fsUsageMB:F2} MB (filesystem actual), Discrepancy: {diffMB:F2} MB ({(diffMB / oldUsage * 100):F1}%)"
-                });
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Storage verified for tenant {TenantId}: {UsageMB:F2}MB",
+                    tenantId, fsUsageMB);
             }
         }
-        else
-        {
-            _logger.LogDebug(
-                "Storage verified for tenant {TenantId}: {UsageMB:F2}MB (diff: {DiffMB:F2}MB)",
-                tenantId, dbUsageMB, diffMB);
-        }
 
-        // Recalculate storage (this also writes .storage.json metadata file)
-        await quotaService.RecalculateStorageUsageAsync(tenantId, _gridStorage);
+        // Use the new optimized method that takes pre-calculated values
+        // This avoids a duplicate filesystem scan
+        await quotaService.UpdateStorageFromCalculationAsync(tenantId, _gridStorage, fsUsageBytes, fileCount);
     }
 
-    private static long CalculateDirectorySize(string dirPath)
+    /// <summary>
+    /// Calculates total size and file count of a directory in a single pass.
+    /// Uses EnumerateFiles for streaming instead of GetFiles to reduce memory pressure.
+    /// </summary>
+    private static (int fileCount, long totalBytes) CalculateDirectorySizeAndCount(string dirPath)
     {
         if (!Directory.Exists(dirPath))
-            return 0;
-
-        var dirInfo = new DirectoryInfo(dirPath);
+            return (0, 0);
 
         try
         {
-            return dirInfo.GetFiles("*", SearchOption.AllDirectories)
-                .Sum(fi => fi.Length);
+            int count = 0;
+            long total = 0;
+
+            // Use EnumerateFiles for streaming - more memory efficient for large directories
+            foreach (var file in Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    var fileInfo = new FileInfo(file);
+                    total += fileInfo.Length;
+                    count++;
+                }
+                catch (IOException)
+                {
+                    // File may have been deleted during enumeration, skip it
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Skip files we can't access
+                }
+            }
+
+            return (count, total);
         }
         catch (UnauthorizedAccessException)
         {
-            // Skip directories we can't access
-            return 0;
+            return (0, 0);
         }
         catch (DirectoryNotFoundException)
         {
-            // Directory was deleted during scan
-            return 0;
+            return (0, 0);
         }
     }
 }

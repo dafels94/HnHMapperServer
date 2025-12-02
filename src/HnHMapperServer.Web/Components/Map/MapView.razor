@@ -1,10 +1,13 @@
 @using Microsoft.JSInterop
 @using HnHMapperServer.Web.Models
 @using HnHMapperServer.Web.Services
+@using HnHMapperServer.Services.Interfaces
+@using HnHMapperServer.Core.DTOs
 @using Microsoft.Extensions.Logging
 @inject IJSRuntime JS
 @inject SafeJsInterop SafeJs
 @inject ILogger<MapView> Logger
+@inject IBuildInfoProvider BuildInfo
 @implements IAsyncDisposable
 
 <div @ref="mapElement" class="leaflet-map"></div>
@@ -20,12 +23,20 @@
     [Parameter] public EventCallback<(int mapId, int coordX, int coordY, int x, int y, int screenX, int screenY)> OnMapRightClick { get; set; }
     [Parameter] public EventCallback<bool> OnMapInitialized { get; set; }
     [Parameter] public EventCallback<int> OnMapChanged { get; set; }
+    [Parameter] public EventCallback<(int mapId, string coords)> OnRequestOverlays { get; set; }
+    [Parameter] public EventCallback<(int mapId, List<RoadWaypointDto> waypoints)> OnRoadDrawingComplete { get; set; }
+    [Parameter] public EventCallback<(int roadId, int screenX, int screenY)> OnRoadContextMenu { get; set; }
 
     private ElementReference mapElement;
     private IJSObjectReference? jsModule;
     private DotNetObjectReference<MapView>? dotnetRef;
     private bool initialized = false;
     private bool disposed = false;
+
+    /// <summary>
+    /// Version suffix for cache busting dynamic JS imports
+    /// </summary>
+    private string JsVersion => $"?v={BuildInfo.Get("web").Commit}";
     
     /// <summary>
     /// Public property to check if the map view has been initialized
@@ -55,7 +66,7 @@
             // Load JavaScript module
             Logger.LogDebug("Loading leaflet-interop.js module...");
             jsModule = await JS.InvokeAsync<IJSObjectReference>(
-                "import", "./js/leaflet-interop.js");
+                "import", $"./js/leaflet-interop.js{JsVersion}");
             Logger.LogDebug("Leaflet module loaded successfully");
 
             // Create .NET reference for callbacks
@@ -151,17 +162,16 @@
 
     public async Task AddMarkerAsync(MarkerModel marker)
     {
-        Console.WriteLine($"[MapView] AddMarkerAsync - initialized={initialized}, jsModule={(jsModule != null ? "not null" : "null")}, disposed={disposed}");
+        if (!initialized || jsModule == null || disposed) return;
 
-        if (!initialized || jsModule == null || disposed)
-        {
-            Console.WriteLine($"[MapView] AddMarkerAsync SKIPPED - precondition failed for marker {marker.Id} ({marker.Name})");
-            return;
-        }
+        await SafeJs.InvokeVoidSafeAsync(jsModule, "addMarker", marker);
+    }
 
-        Console.WriteLine($"[MapView] AddMarkerAsync - Calling SafeJs for marker {marker.Id} ({marker.Name}), Map={marker.Map}, Hidden={marker.Hidden}, Pos=({marker.Position.X},{marker.Position.Y})");
-        var result = await SafeJs.InvokeVoidSafeAsync(jsModule, "addMarker", marker);
-        Console.WriteLine($"[MapView] AddMarkerAsync - SafeJs returned {result} for marker {marker.Id}");
+    public async Task AddMarkersAsync(IEnumerable<MarkerModel> markers)
+    {
+        if (!initialized || jsModule == null || disposed) return;
+
+        await SafeJs.InvokeVoidSafeAsync(jsModule, "addMarkersBatch", markers);
     }
 
     public async Task UpdateMarkerAsync(MarkerModel marker)
@@ -297,6 +307,14 @@
         await SafeJs.InvokeVoidSafeAsync(jsModule, "clearAllMarkers");
     }
 
+    public async Task SetHiddenMarkerTypesAsync(IEnumerable<string> hiddenTypes)
+    {
+        if (!initialized || jsModule == null || disposed) return;
+
+        // Cast to object to prevent params from spreading the array
+        await SafeJs.InvokeVoidSafeAsync(jsModule, "setHiddenMarkerTypes", (object)hiddenTypes.ToArray());
+    }
+
     public async Task SetMapRevisionAsync(int mapId, int revision)
     {
         if (!initialized || jsModule == null || disposed) return;
@@ -373,6 +391,50 @@
         if (OnMapChanged.HasDelegate)
         {
             await OnMapChanged.InvokeAsync(mapId);
+        }
+    }
+
+    [JSInvokable]
+    public async Task JsRequestOverlays(int mapId, string coords)
+    {
+        Logger.LogDebug("Overlay request received from JavaScript for map {MapId}, coords: {Coords}", mapId, coords);
+
+        if (OnRequestOverlays.HasDelegate)
+        {
+            await OnRequestOverlays.InvokeAsync((mapId, coords));
+        }
+    }
+
+    /// <summary>
+    /// Send overlay data back to JavaScript after fetching from API
+    /// </summary>
+    public async Task SetOverlayDataAsync(int mapId, object overlays)
+    {
+        if (!initialized || jsModule == null || disposed) return;
+
+        await SafeJs.InvokeVoidSafeAsync(jsModule, "setOverlayData", mapId, overlays);
+    }
+
+    [JSInvokable]
+    public async Task JsOnRoadDrawingComplete(int mapId, List<RoadWaypointDto> waypoints)
+    {
+        Logger.LogInformation("[Road] JsOnRoadDrawingComplete received: mapId={MapId}, waypoints={Count}",
+            mapId, waypoints?.Count ?? 0);
+
+        if (OnRoadDrawingComplete.HasDelegate)
+        {
+            await OnRoadDrawingComplete.InvokeAsync((mapId, waypoints ?? new List<RoadWaypointDto>()));
+        }
+    }
+
+    [JSInvokable]
+    public async Task JsOnRoadContextMenu(int roadId, int screenX, int screenY)
+    {
+        Logger.LogDebug("[Road] JsOnRoadContextMenu received: roadId={RoadId}", roadId);
+
+        if (OnRoadContextMenu.HasDelegate)
+        {
+            await OnRoadContextMenu.InvokeAsync((roadId, screenX, screenY));
         }
     }
 

@@ -2,12 +2,31 @@
 // Handles game marker (resource, quest, etc.) management
 
 import { HnHMaxZoom } from './leaflet-config.js';
+import * as VoronoiAdjacency from './voronoi-adjacency.js';
 
-// Marker storage
+// Marker storage - visible markers with their Leaflet instances
 const markers = {};
+// All marker data storage - persists regardless of visibility for re-evaluation
+const allMarkerData = {};
 let currentMapId = 0;
 let markerLayer = null;
 let detailedMarkerLayer = null;
+
+// Hidden marker types (by image path)
+const hiddenMarkerTypes = new Set();
+
+// Thingwall highlighting state
+let thingwallHighlightEnabled = false;
+
+// Quest giver highlighting state
+let questGiverHighlightEnabled = false;
+
+// Marker filter mode state (hide all markers except highlighted ones)
+let markerFilterModeEnabled = false;
+
+// Thingwall tracking for Voronoi adjacency computation
+const thingwallMarkers = {}; // thingwallId -> {marker, data}
+let jumpConnectionsEnabled = false;
 
 // Safely invoke .NET methods from JS
 let invokeDotNetSafe = null;
@@ -34,51 +53,109 @@ export function setMarkerLayers(mainLayer, detailLayer) {
  * Set the current map ID for marker filtering
  */
 export function setCurrentMapId(mapId) {
-    console.log('[Marker] setCurrentMapId:', mapId, '(was:', currentMapId, ')');
     currentMapId = mapId;
+}
+
+/**
+ * Set hidden marker types (by image path)
+ * @param {Array<string>} types - Array of image paths to hide
+ * @param {object} mapInstance - Leaflet map instance (optional, for immediate refresh)
+ */
+export function setHiddenMarkerTypes(types, mapInstance) {
+    hiddenMarkerTypes.clear();
+    if (types && Array.isArray(types)) {
+        types.forEach(t => hiddenMarkerTypes.add(t));
+    }
+
+    // If map instance provided, refresh marker visibility
+    if (mapInstance) {
+        refreshMarkerVisibility(mapInstance);
+    }
+}
+
+/**
+ * Get current hidden marker types
+ * @returns {Array<string>} - Array of hidden image paths
+ */
+export function getHiddenMarkerTypes() {
+    return Array.from(hiddenMarkerTypes);
+}
+
+/**
+ * Refresh marker visibility based on current hidden types
+ * Removes markers that should be hidden, keeps visible ones
+ * @param {object} mapInstance - Leaflet map instance
+ */
+export function refreshMarkerVisibility(mapInstance) {
+    // Remove markers whose type is now hidden
+    const idsToRemove = [];
+    Object.keys(markers).forEach(id => {
+        const mark = markers[id];
+        if (hiddenMarkerTypes.has(mark.data.image)) {
+            // Remove from the appropriate layer group
+            if (markerLayer && markerLayer.hasLayer(mark.marker)) {
+                markerLayer.removeLayer(mark.marker);
+            }
+            if (detailedMarkerLayer && detailedMarkerLayer.hasLayer(mark.marker)) {
+                detailedMarkerLayer.removeLayer(mark.marker);
+            }
+            idsToRemove.push(id);
+        }
+    });
+    // Clean up markers object
+    idsToRemove.forEach(id => delete markers[id]);
 }
 
 /**
  * Add a marker to the map
  * @param {object} markerData - Marker data with id, name, image, position, type, ready, minReady, maxReady, hidden
  * @param {object} mapInstance - Leaflet map instance
+ * @param {boolean} skipStorage - If true, don't store in allMarkerData (used during rebuilds)
  * @returns {boolean} - True if marker was added
  */
-export function addMarker(markerData, mapInstance) {
-    console.log('[Marker] addMarker called:', {
-        id: markerData.id,
-        name: markerData.name,
-        markerMap: markerData.map,
-        currentMapId: currentMapId,
-        willAdd: markerData.map === currentMapId && !markers[markerData.id] && !markerData.hidden,
-        exists: !!markers[markerData.id],
-        hidden: markerData.hidden
-    });
-
+export function addMarker(markerData, mapInstance, skipStorage = false) {
     // Only show markers on their own map
     if (markerData.map !== currentMapId) {
-        console.warn('[Marker] Skipping marker - wrong map:', markerData.map, 'vs current:', currentMapId);
         return false;
     }
 
+    // Store marker data for later re-evaluation (unless this is a rebuild)
+    if (!skipStorage) {
+        allMarkerData[markerData.id] = markerData;
+    }
+
     if (markers[markerData.id]) {
-        console.warn('[Marker] Skipping marker - already exists:', markerData.id);
         return false;
     }
 
     if (markerData.hidden) {
-        console.warn('[Marker] Skipping marker - hidden:', markerData.id);
         return false;
     }
 
-    console.log('[Marker] Adding marker to map:', markerData.id, markerData.name);
+    // Skip markers whose type is hidden by user preference
+    if (hiddenMarkerTypes.has(markerData.image)) {
+        return false;
+    }
 
     const iconUrl = `${markerData.image}.png`;
     const isCustom = markerData.image === "gfx/terobjs/mm/custom";
     const isCave = markerData.name.toLowerCase() === "cave";
+    const isThingwall = markerData.type === "thingwall";
+    const isQuestGiver = markerData.type === "questgiver";
+    const shouldHighlightThingwall = isThingwall && thingwallHighlightEnabled;
+    const shouldHighlightQuestGiver = isQuestGiver && questGiverHighlightEnabled;
+    const shouldHighlight = shouldHighlightThingwall || shouldHighlightQuestGiver;
 
-    let iconSize = isCustom && !isCave ? [36, 36] : [36, 36];
-    let iconAnchor = isCustom && !isCave ? [11, 21] : [18, 18];
+    // Marker filter mode: hide all markers except highlighted ones
+    if (markerFilterModeEnabled) {
+        if (!shouldHighlight) {
+            return false; // Skip non-highlighted markers when filter mode is active
+        }
+    }
+
+    // Use larger icons for highlighted thingwalls (48px vs 36px default)
+    let iconSize = shouldHighlight ? [48, 48] : (isCustom && !isCave ? [36, 36] : [36, 36]);
+    let iconAnchor = shouldHighlight ? [24, 24] : (isCustom && !isCave ? [11, 21] : [18, 18]);
 
     let icon;
     if (markerData.timerText) {
@@ -111,12 +188,29 @@ export function addMarker(markerData, mapInstance) {
     const color = getMarkerColor(markerData.type);
     const extra = getMarkerReadyText(markerData);
 
+    // Determine tooltip and highlight class based on marker type
+    const tooltipClass = shouldHighlightThingwall ? 'thingwall-label' :
+                         shouldHighlightQuestGiver ? 'questgiver-label' : '';
+    const highlightClass = shouldHighlightThingwall ? 'thingwall-highlighted' :
+                           shouldHighlightQuestGiver ? 'questgiver-highlighted' : '';
+
     marker.bindTooltip(`<div style='color:${color};'><b>${markerData.name} ${extra}</b></div>`, {
-        permanent: false,
+        permanent: shouldHighlight,
         direction: 'top',
         sticky: true,
-        opacity: 0.9
+        opacity: 0.9,
+        className: tooltipClass
     });
+
+    // Add highlight class to marker element if highlighting is enabled
+    if (shouldHighlight && highlightClass) {
+        marker.on('add', () => {
+            const el = marker.getElement();
+            if (el) {
+                el.classList.add(highlightClass);
+            }
+        });
+    }
 
     marker.on('click', () => {
         invokeDotNetSafe('JsOnMarkerClicked', markerData.id);
@@ -142,7 +236,64 @@ export function addMarker(markerData, mapInstance) {
         data: markerData
     };
 
+    // Track thingwalls separately for Voronoi adjacency computation
+    if (isThingwall) {
+        thingwallMarkers[markerData.id] = {
+            marker: marker,
+            data: markerData
+        };
+
+        // Add hover events for jump connections visualization
+        // Works independently of thingwall highlighting toggle
+        marker.on('mouseover', () => {
+            if (VoronoiAdjacency.isEnabled()) {
+                const latlng = marker.getLatLng();
+                VoronoiAdjacency.showConnections(
+                    markerData.id,
+                    latlng,
+                    getThingwallLatLng,
+                    getThingwallName,
+                    highlightThingwallMarker
+                );
+            }
+        });
+
+        marker.on('mouseout', () => {
+            if (VoronoiAdjacency.isEnabled()) {
+                VoronoiAdjacency.hideConnections(unhighlightThingwallMarker);
+            }
+        });
+    }
+
     return true;
+}
+
+/**
+ * Add multiple markers to the map in a single batch (performance optimization)
+ * @param {Array} markersData - Array of marker data objects
+ * @param {object} mapInstance - Leaflet map instance
+ * @returns {object} - Result with counts: { added, skipped }
+ */
+export function addMarkersBatch(markersData, mapInstance) {
+    let added = 0;
+    let skipped = 0;
+
+    for (const markerData of markersData) {
+        if (addMarker(markerData, mapInstance)) {
+            added++;
+        } else {
+            skipped++;
+        }
+    }
+
+    // Initialize Voronoi adjacency if we have enough thingwalls
+    if (Object.keys(thingwallMarkers).length >= 3) {
+        VoronoiAdjacency.initialize(mapInstance);
+        VoronoiAdjacency.setEnabled(true);
+        updateVoronoiAdjacency(mapInstance);
+    }
+
+    return { added, skipped };
 }
 
 /**
@@ -211,7 +362,50 @@ export function removeMarker(markerId, mapInstance) {
  */
 export function clearAllMarkers(mapInstance) {
     Object.keys(markers).forEach(id => removeMarker(parseInt(id), mapInstance));
+    // Also clear stored marker data
+    Object.keys(allMarkerData).forEach(id => delete allMarkerData[id]);
+    // Clear thingwall tracking
+    Object.keys(thingwallMarkers).forEach(id => delete thingwallMarkers[id]);
+    // Cleanup Voronoi state
+    VoronoiAdjacency.cleanup();
     return true;
+}
+
+/**
+ * Rebuild all markers from stored data based on current visibility settings
+ * Used when filter mode or highlight toggles change
+ * @param {object} mapInstance - Leaflet map instance
+ */
+function rebuildAllMarkers(mapInstance) {
+    // Remove all visible markers from the map
+    Object.keys(markers).forEach(id => {
+        const mark = markers[id];
+        if (markerLayer && markerLayer.hasLayer(mark.marker)) {
+            markerLayer.removeLayer(mark.marker);
+        }
+        if (detailedMarkerLayer && detailedMarkerLayer.hasLayer(mark.marker)) {
+            detailedMarkerLayer.removeLayer(mark.marker);
+        }
+        mapInstance.removeLayer(mark.marker);
+    });
+
+    // Clear markers object
+    Object.keys(markers).forEach(id => delete markers[id]);
+
+    // Clear thingwall tracking (will be repopulated during addMarker)
+    Object.keys(thingwallMarkers).forEach(id => delete thingwallMarkers[id]);
+
+    // Re-add all markers from stored data (with skipStorage=true to avoid re-storing)
+    Object.values(allMarkerData).forEach(markerData => {
+        addMarker(markerData, mapInstance, true);
+    });
+
+    // Always update Voronoi adjacency after rebuild if there are thingwalls
+    if (Object.keys(thingwallMarkers).length >= 3) {
+        VoronoiAdjacency.initialize(mapInstance);
+        VoronoiAdjacency.setEnabled(true);
+        updateVoronoiAdjacency(mapInstance);
+    }
 }
 
 /**
@@ -249,10 +443,103 @@ export function jumpToMarker(markerId, mapInstance) {
     return false;
 }
 
+/**
+ * Enable/disable thingwall highlighting with glow effect and permanent labels
+ * @param {boolean} enabled - Whether highlighting is enabled
+ * @param {object} mapInstance - Leaflet map instance
+ * @returns {boolean} - Always true
+ */
+export function setThingwallHighlightEnabled(enabled, mapInstance) {
+    if (!mapInstance) {
+        console.warn('[MarkerManager] Cannot toggle thingwall highlight - mapInstance is null');
+        return false;
+    }
+
+    if (thingwallHighlightEnabled === enabled) {
+        return true; // No change needed
+    }
+
+    thingwallHighlightEnabled = enabled;
+
+    // Rebuild all markers to apply new visibility/highlighting rules
+    // Note: Jump connections work independently and are always enabled when thingwalls exist
+    rebuildAllMarkers(mapInstance);
+
+    console.log(`[MarkerManager] Thingwall highlighting ${enabled ? 'enabled' : 'disabled'}`);
+    return true;
+}
+
+/**
+ * Enable/disable quest giver highlighting with glow effect and permanent labels
+ * @param {boolean} enabled - Whether highlighting is enabled
+ * @param {object} mapInstance - Leaflet map instance
+ * @returns {boolean} - Always true
+ */
+export function setQuestGiverHighlightEnabled(enabled, mapInstance) {
+    if (!mapInstance) {
+        console.warn('[MarkerManager] Cannot toggle quest giver highlight - mapInstance is null');
+        return false;
+    }
+
+    if (questGiverHighlightEnabled === enabled) {
+        return true; // No change needed
+    }
+
+    questGiverHighlightEnabled = enabled;
+
+    // Rebuild all markers to apply new visibility/highlighting rules
+    rebuildAllMarkers(mapInstance);
+
+    console.log(`[MarkerManager] Quest giver highlighting ${enabled ? 'enabled' : 'disabled'}`);
+    return true;
+}
+
+/**
+ * Get whether quest giver highlighting is enabled
+ * @returns {boolean} - True if quest giver highlighting is enabled
+ */
+export function isQuestGiverHighlightEnabled() {
+    return questGiverHighlightEnabled;
+}
+
+/**
+ * Enable/disable marker filter mode
+ * When enabled, hides all markers except those with active highlights (thingwalls, quest givers)
+ * @param {boolean} enabled - Whether filter mode is enabled
+ * @param {object} mapInstance - Leaflet map instance
+ * @returns {boolean} - Always true
+ */
+export function setMarkerFilterModeEnabled(enabled, mapInstance) {
+    if (!mapInstance) {
+        console.warn('[MarkerManager] Cannot toggle marker filter mode - mapInstance is null');
+        return false;
+    }
+
+    if (markerFilterModeEnabled === enabled) {
+        return true; // No change needed
+    }
+
+    markerFilterModeEnabled = enabled;
+
+    // Rebuild all markers to apply new visibility/highlighting rules
+    rebuildAllMarkers(mapInstance);
+
+    console.log(`[MarkerManager] Marker filter mode ${enabled ? 'enabled' : 'disabled'}`);
+    return true;
+}
+
+/**
+ * Get whether marker filter mode is enabled
+ * @returns {boolean} - True if marker filter mode is enabled
+ */
+export function isMarkerFilterModeEnabled() {
+    return markerFilterModeEnabled;
+}
+
 // Helper functions
 
 function getMarkerColor(type) {
-    if (type === "quest") return "#FDB800";
+    if (type === "questgiver") return "#2CDB2C"; // Green for quest givers
     if (type === "thingwall") return "#00cffd";
     return "#FFF";
 }
@@ -284,4 +571,125 @@ function msToTimeStr(duration) {
     const s = (days <= 0 && hours <= 0) ? `${seconds}s` : "";
 
     return d + h + m + s;
+}
+
+// ============ Voronoi/Jump Connection Helpers ============
+
+/**
+ * Get the LatLng of a thingwall marker by ID
+ * @param {number} thingwallId - Thingwall marker ID
+ * @returns {object|null} - Leaflet LatLng or null if not found
+ */
+function getThingwallLatLng(thingwallId) {
+    const tw = thingwallMarkers[thingwallId];
+    return tw ? tw.marker.getLatLng() : null;
+}
+
+/**
+ * Get the name of a thingwall marker by ID
+ * @param {number} thingwallId - Thingwall marker ID
+ * @returns {string|null} - Thingwall name or null if not found
+ */
+function getThingwallName(thingwallId) {
+    const tw = thingwallMarkers[thingwallId];
+    return tw ? tw.data.name : null;
+}
+
+/**
+ * Highlight a thingwall marker as a jump target
+ * @param {number} thingwallId - Thingwall marker ID
+ * @param {boolean} highlight - Whether to add or remove highlight
+ * @param {boolean} isUncertain - Whether this is an uncertain/far connection
+ */
+function highlightThingwallMarker(thingwallId, highlight, isUncertain = false) {
+    const tw = thingwallMarkers[thingwallId];
+    if (!tw) return;
+
+    const el = tw.marker.getElement();
+
+    if (highlight) {
+        // Add glow effect class
+        if (el) {
+            if (isUncertain) {
+                el.classList.add('thingwall-jump-target-uncertain');
+            } else {
+                el.classList.add('thingwall-jump-target');
+            }
+        }
+
+        // If thingwall highlighting is OFF, show the tooltip/name
+        if (!thingwallHighlightEnabled) {
+            tw.marker.openTooltip();
+        }
+    } else {
+        // Remove all highlight classes
+        if (el) {
+            el.classList.remove('thingwall-jump-target');
+            el.classList.remove('thingwall-jump-target-uncertain');
+        }
+
+        // If thingwall highlighting is OFF, hide the tooltip
+        if (!thingwallHighlightEnabled) {
+            tw.marker.closeTooltip();
+        }
+    }
+}
+
+/**
+ * Remove jump target highlight from a thingwall marker
+ * @param {number} thingwallId - Thingwall marker ID
+ */
+function unhighlightThingwallMarker(thingwallId) {
+    highlightThingwallMarker(thingwallId, false);
+}
+
+/**
+ * Update Voronoi adjacency with current thingwall positions
+ * @param {object} mapInstance - Leaflet map instance
+ */
+function updateVoronoiAdjacency(mapInstance) {
+    const thingwalls = Object.values(thingwallMarkers).map(tw => ({
+        id: tw.data.id,
+        position: tw.data.position
+    }));
+    VoronoiAdjacency.updateThingwalls(thingwalls);
+}
+
+/**
+ * Enable/disable jump connections visualization on thingwall hover
+ * @param {boolean} enabled - Whether to show jump connections
+ * @param {object} mapInstance - Leaflet map instance
+ * @returns {boolean} - Success status
+ */
+export function setJumpConnectionsEnabled(enabled, mapInstance) {
+    if (!mapInstance) {
+        console.warn('[MarkerManager] Cannot toggle jump connections - mapInstance is null');
+        return false;
+    }
+
+    if (jumpConnectionsEnabled === enabled) {
+        return true; // No change needed
+    }
+
+    jumpConnectionsEnabled = enabled;
+
+    if (enabled) {
+        // Initialize Voronoi module and compute adjacency
+        VoronoiAdjacency.initialize(mapInstance);
+        VoronoiAdjacency.setEnabled(true);
+        updateVoronoiAdjacency(mapInstance);
+    } else {
+        VoronoiAdjacency.setEnabled(false);
+    }
+
+    console.log(`[MarkerManager] Jump connections ${enabled ? 'enabled' : 'disabled'}`);
+    return true;
+}
+
+/**
+ * Get whether jump connections are enabled
+ * @returns {boolean} - True if jump connections are enabled
+ */
+export function isJumpConnectionsEnabled() {
+    return jumpConnectionsEnabled;
 }

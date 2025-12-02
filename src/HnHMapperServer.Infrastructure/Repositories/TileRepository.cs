@@ -41,30 +41,55 @@ public class TileRepository : ITileRepository
 
     public async Task SaveTileAsync(TileData tileData)
     {
-        // Use IgnoreQueryFilters to work in background services (no HTTP context)
-        // Then manually filter by the TenantId from the incoming tileData
-        var existing = await _context.Tiles
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(t =>
-                t.MapId == tileData.MapId &&
-                t.CoordX == tileData.Coord.X &&
-                t.CoordY == tileData.Coord.Y &&
-                t.Zoom == tileData.Zoom &&
-                t.TenantId == tileData.TenantId);
+        // Retry logic for SQLite lock errors during concurrent imports
+        const int maxRetries = 5;
+        var delay = TimeSpan.FromMilliseconds(100);
 
-        var entity = MapFromDomain(tileData);
-
-        if (existing != null)
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            entity.Id = existing.Id;
-            _context.Entry(existing).CurrentValues.SetValues(entity);
-        }
-        else
-        {
-            _context.Tiles.Add(entity);
-        }
+            try
+            {
+                // Use IgnoreQueryFilters to work in background services (no HTTP context)
+                // Then manually filter by the TenantId from the incoming tileData
+                var existing = await _context.Tiles
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(t =>
+                        t.MapId == tileData.MapId &&
+                        t.CoordX == tileData.Coord.X &&
+                        t.CoordY == tileData.Coord.Y &&
+                        t.Zoom == tileData.Zoom &&
+                        t.TenantId == tileData.TenantId);
 
-        await _context.SaveChangesAsync();
+                var entity = MapFromDomain(tileData);
+
+                if (existing != null)
+                {
+                    entity.Id = existing.Id;
+                    _context.Entry(existing).CurrentValues.SetValues(entity);
+                }
+                else
+                {
+                    _context.Tiles.Add(entity);
+                }
+
+                await _context.SaveChangesAsync();
+                return; // Success
+            }
+            catch (DbUpdateException ex) when (
+                ex.InnerException is Microsoft.Data.Sqlite.SqliteException sqliteEx &&
+                (sqliteEx.SqliteErrorCode == 5 || sqliteEx.SqliteErrorCode == 6)) // SQLITE_BUSY or SQLITE_LOCKED
+            {
+                if (attempt == maxRetries)
+                    throw; // Rethrow on final attempt
+
+                // Exponential backoff with jitter
+                await Task.Delay(delay + TimeSpan.FromMilliseconds(Random.Shared.Next(50)));
+                delay *= 2;
+
+                // Detach any tracked entities to avoid state issues on retry
+                _context.ChangeTracker.Clear();
+            }
+        }
     }
 
     public async Task<List<TileData>> GetAllTilesAsync()
@@ -124,4 +149,63 @@ public class TileRepository : ITileRepository
         TenantId = tile.TenantId,
         FileSizeBytes = tile.FileSizeBytes
     };
+
+    public async Task SaveTilesBatchAsync(IEnumerable<TileData> tiles, bool skipExistenceCheck = false)
+    {
+        var tileList = tiles.ToList();
+        if (tileList.Count == 0) return;
+
+        if (skipExistenceCheck)
+        {
+            // Caller guarantees no duplicates (e.g., newly generated zoom tiles)
+            // Skip the expensive existence check query
+            var tileEntities = tileList.Select(MapFromDomain).ToList();
+            _context.Tiles.AddRange(tileEntities);
+            await _context.SaveChangesAsync();
+            return;
+        }
+
+        // Filter out tiles that already exist to avoid UNIQUE constraint violations
+        // Tile uniqueness: (MapId, CoordX, CoordY, Zoom, TenantId)
+        var existingKeys = new HashSet<(int MapId, int X, int Y, int Zoom, string TenantId)>();
+
+        // Check in chunks with optimized coordinate-specific queries
+        const int chunkSize = 500;
+        foreach (var chunk in tileList.Chunk(chunkSize))
+        {
+            // Group by (MapId, Zoom, TenantId) for more efficient queries
+            foreach (var group in chunk.GroupBy(t => new { t.MapId, t.Zoom, t.TenantId }))
+            {
+                var xCoords = group.Select(t => t.Coord.X).Distinct().ToList();
+                var yCoords = group.Select(t => t.Coord.Y).Distinct().ToList();
+
+                // Query only for specific coordinates instead of entire map
+                var existing = await _context.Tiles
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(t => t.MapId == group.Key.MapId
+                             && t.Zoom == group.Key.Zoom
+                             && t.TenantId == group.Key.TenantId
+                             && xCoords.Contains(t.CoordX)
+                             && yCoords.Contains(t.CoordY))
+                    .Select(t => new { t.MapId, t.CoordX, t.CoordY, t.Zoom, t.TenantId })
+                    .ToListAsync();
+
+                foreach (var e in existing)
+                {
+                    existingKeys.Add((e.MapId, e.CoordX, e.CoordY, e.Zoom, e.TenantId));
+                }
+            }
+        }
+
+        var newTiles = tileList
+            .Where(t => !existingKeys.Contains((t.MapId, t.Coord.X, t.Coord.Y, t.Zoom, t.TenantId)))
+            .ToList();
+
+        if (newTiles.Count == 0) return;
+
+        var entities = newTiles.Select(MapFromDomain).ToList();
+        _context.Tiles.AddRange(entities);
+        await _context.SaveChangesAsync();
+    }
 }

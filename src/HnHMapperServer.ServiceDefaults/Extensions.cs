@@ -28,17 +28,20 @@ public static class Extensions
 
         builder.Services.ConfigureHttpClientDefaults(http =>
         {
-            // Turn on resilience by default
-            http.AddStandardResilienceHandler();
+            // NOTE: Resilience is NOT added by default because file upload streams
+            // cannot be retried. Add resilience explicitly on clients that need it.
+            // http.AddStandardResilienceHandler();
 
             // Turn on service discovery by default
             http.AddServiceDiscovery();
         });
 
-        // Prefer HTTPS endpoints for service discovery resolution
+        // Allow both HTTP and HTTPS for service discovery resolution
+        // In production Docker Compose, internal traffic uses HTTP (api:8080)
+        // In development with Aspire, HTTPS is used (https://api)
         builder.Services.Configure<ServiceDiscoveryOptions>(options =>
         {
-            options.AllowedSchemes = ["https"];
+            options.AllowedSchemes = ["https", "http"];
         });
 
         return builder;

@@ -1,9 +1,10 @@
+using System.Diagnostics;
+using System.Text.Json;
 using HnHMapperServer.Core.DTOs;
 using HnHMapperServer.Infrastructure.Data;
 using HnHMapperServer.Services.Interfaces;
 using HnHMapperServer.Services.Services;
 using Microsoft.EntityFrameworkCore;
-using System.Text.Json;
 
 namespace HnHMapperServer.Api.BackgroundServices;
 
@@ -31,12 +32,20 @@ public class TimerCheckService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Randomized startup delay to prevent all services starting simultaneously
+        var startupDelay = TimeSpan.FromSeconds(Random.Shared.Next(0, 60));
+        _logger.LogInformation("Timer Check Service starting in {Delay:F1}s", startupDelay.TotalSeconds);
+        await Task.Delay(startupDelay, stoppingToken);
+
         _logger.LogInformation("Timer Check Service started (runs every 30 seconds)");
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var sw = Stopwatch.StartNew();
             try
             {
+                _logger.LogInformation("Timer check job started");
+
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var timerService = scope.ServiceProvider.GetRequiredService<ITimerService>();
@@ -95,11 +104,16 @@ public class TimerCheckService : BackgroundService
                     }
                 }
 
+                sw.Stop();
                 if (expiredCount > 0 || warningCount > 0)
                 {
                     _logger.LogInformation(
-                        "Processed {ExpiredCount} expired timers and {WarningCount} pre-expiry warnings",
-                        expiredCount, warningCount);
+                        "Timer check job completed in {ElapsedMs}ms: processed {ExpiredCount} expired timers and {WarningCount} pre-expiry warnings",
+                        sw.ElapsedMilliseconds, expiredCount, warningCount);
+                }
+                else
+                {
+                    _logger.LogInformation("Timer check job completed in {ElapsedMs}ms (no timers processed)", sw.ElapsedMilliseconds);
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
@@ -110,7 +124,8 @@ public class TimerCheckService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in timer check service");
+                sw.Stop();
+                _logger.LogError(ex, "Error in timer check service after {ElapsedMs}ms", sw.ElapsedMilliseconds);
                 await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
             }
         }

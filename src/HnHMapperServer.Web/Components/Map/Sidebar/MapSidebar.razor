@@ -3,6 +3,8 @@
 @using HnHMapperServer.Core.DTOs
 @using MudBlazor
 
+@* RoadViewModel is in HnHMapperServer.Web.Models *@
+
 <!-- Right-anchored drawer for all sidebar functionality -->
 <MudDrawer @bind-Open="@IsOpen"
            Anchor="Anchor.End"
@@ -113,6 +115,25 @@
                         </MudStack>
                     </MudButton>
                 </MudItem>
+
+                <!-- Roads Button -->
+                <MudItem xs="6">
+                    <MudButton OnClick="@(() => OnModeChanged.InvokeAsync(SidebarMode.Roads))"
+                               Variant="@(CurrentMode == SidebarMode.Roads ? Variant.Filled : Variant.Outlined)"
+                               Color="@(CurrentMode == SidebarMode.Roads ? Color.Primary : Color.Default)"
+                               FullWidth="true"
+                               Size="Size.Large"
+                               Class="mode-button">
+                        <MudStack Spacing="1" AlignItems="AlignItems.Center" Style="width: 100%;">
+                            <MudIcon Icon="@Icons.Material.Filled.Timeline" Size="Size.Medium" />
+                            <MudText Typo="Typo.caption" Style="font-weight: 500;">Roads</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text"
+                                     Style="@(Roads.Count > 0 ? "" : "visibility: hidden;")">
+                                @(Roads.Count > 0 ? Roads.Count.ToString() : "0")
+                            </MudChip>
+                        </MudStack>
+                    </MudButton>
+                </MudItem>
             </MudGrid>
         </MudPaper>
     </MudDrawerHeader>
@@ -133,12 +154,14 @@
                           CustomMarkers="@CustomMarkers"
                           Timers="@Timers"
                           Maps="@Maps"
+                          HiddenMarkerGroups="@HiddenMarkerGroups"
                           OnMarkerSelected="@OnMarkerSelected"
                           OnCustomMarkerEdit="@OnCustomMarkerEdit"
                           OnCustomMarkerDelete="@OnCustomMarkerDelete"
                           OnCustomMarkerSelected="@OnCustomMarkerSelected"
                           OnSetTimerForMarker="@OnSetTimerForMarker"
-                          OnSetTimerForCustomMarker="@OnSetTimerForCustomMarker" />
+                          OnSetTimerForCustomMarker="@OnSetTimerForCustomMarker"
+                          OnMarkerGroupVisibilityChanged="@OnMarkerGroupVisibilityChanged" />
         }
         else if (CurrentMode == SidebarMode.Layers)
         {
@@ -170,6 +193,14 @@
             <EventsPanel Timers="@Timers"
                         OnMarkerSelected="@OnMarkerSelected"
                         OnCustomMarkerSelected="@OnCustomMarkerSelected" />
+        }
+        else if (CurrentMode == SidebarMode.Roads)
+        {
+            <RoadsPanel Roads="@Roads"
+                       Maps="@Maps"
+                       OnRoadSelected="@OnRoadSelected"
+                       OnRoadEdit="@OnRoadEdit"
+                       OnRoadDelete="@OnRoadDelete" />
         }
     </div>
 </MudDrawer>
@@ -262,7 +293,7 @@
     [Parameter] public EventCallback<bool> OnToggleThingwallTooltips { get; set; }
     [Parameter] public EventCallback<bool> OnToggleQuests { get; set; }
     [Parameter] public EventCallback<bool> OnToggleQuestTooltips { get; set; }
-    
+
     // Event callbacks for player/marker selection
     [Parameter] public EventCallback<CharacterModel> OnPlayerSelected { get; set; }
     [Parameter] public EventCallback<MarkerModel> OnMarkerSelected { get; set; }
@@ -274,6 +305,31 @@
     // Event callbacks for timer actions
     [Parameter] public EventCallback<MarkerModel> OnSetTimerForMarker { get; set; }
     [Parameter] public EventCallback<CustomMarkerViewModel> OnSetTimerForCustomMarker { get; set; }
+
+    // Marker group visibility
+    [Parameter] public HashSet<string> HiddenMarkerGroups { get; set; } = new();
+    [Parameter] public EventCallback<(string ImageType, bool Visible)> OnMarkerGroupVisibilityChanged { get; set; }
+
+    // Road parameters
+    /// <summary>
+    /// List of all roads
+    /// </summary>
+    [Parameter] public IReadOnlyList<RoadViewModel> Roads { get; set; } = Array.Empty<RoadViewModel>();
+
+    /// <summary>
+    /// Event callback when a road is selected
+    /// </summary>
+    [Parameter] public EventCallback<RoadViewModel> OnRoadSelected { get; set; }
+
+    /// <summary>
+    /// Event callback when a road is edited
+    /// </summary>
+    [Parameter] public EventCallback<RoadViewModel> OnRoadEdit { get; set; }
+
+    /// <summary>
+    /// Event callback when a road is deleted
+    /// </summary>
+    [Parameter] public EventCallback<RoadViewModel> OnRoadDelete { get; set; }
 }
 
 

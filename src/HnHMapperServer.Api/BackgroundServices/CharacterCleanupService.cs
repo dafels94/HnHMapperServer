@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HnHMapperServer.Services.Interfaces;
 
 namespace HnHMapperServer.Api.BackgroundServices;
@@ -22,12 +23,20 @@ public class CharacterCleanupService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Randomized startup delay to prevent all services starting simultaneously
+        var startupDelay = TimeSpan.FromSeconds(Random.Shared.Next(0, 60));
+        _logger.LogInformation("Character Cleanup Service starting in {Delay:F1}s", startupDelay.TotalSeconds);
+        await Task.Delay(startupDelay, stoppingToken);
+
         _logger.LogInformation("Character Cleanup Service started");
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            var sw = Stopwatch.StartNew();
             try
             {
+                _logger.LogInformation("Character cleanup job started");
+
                 using var scope = _scopeFactory.CreateScope();
                 var characterService = scope.ServiceProvider.GetRequiredService<ICharacterService>();
                 var tenantService = scope.ServiceProvider.GetRequiredService<ITenantService>();
@@ -41,6 +50,9 @@ public class CharacterCleanupService : BackgroundService
                     characterService.CleanupStaleCharacters(TimeSpan.FromSeconds(10), tenant.Id);
                 }
 
+                sw.Stop();
+                _logger.LogInformation("Character cleanup job completed in {ElapsedMs}ms", sw.ElapsedMilliseconds);
+
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
             catch (OperationCanceledException)
@@ -49,7 +61,8 @@ public class CharacterCleanupService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in character cleanup service");
+                sw.Stop();
+                _logger.LogError(ex, "Error in character cleanup service after {ElapsedMs}ms", sw.ElapsedMilliseconds);
                 await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
             }
         }

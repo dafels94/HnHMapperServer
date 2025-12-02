@@ -1,0 +1,135 @@
+@rendermode InteractiveServer
+@inject IHttpClientFactory HttpClientFactory
+@inject ISnackbar Snackbar
+@using System.Text.Json
+@using System.Net.Http.Json
+@using System.Text
+@using HnHMapperServer.Core.DTOs
+@using HnHMapperServer.Web.Models
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.Edit" Class="mr-1" Color="Color.Primary" />
+            Edit Road
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudStack Spacing="3">
+            <MudTextField @bind-Value="name"
+                         Label="Road Name"
+                         Required="true"
+                         MaxLength="80"
+                         Counter="80"
+                         Immediate="true"
+                         HelperText="Required (max 80 characters)" />
+
+            <MudCheckBox @bind-Value="hidden" Label="Hidden" Color="Color.Warning" />
+
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                @Road.WaypointCount waypoint(s) • Created by @Road.CreatedBy • @Road.RelativeTime
+            </MudText>
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save" Disabled="@isSaving">
+            @if (isSaving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                <span class="ms-2">Saving...</span>
+            }
+            else
+            {
+                <span>Save Changes</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public EventCallback<RoadViewModel?> OnRoadUpdated { get; set; }
+
+    [Parameter] public RoadViewModel Road { get; set; } = new();
+
+    private string name = string.Empty;
+    private bool hidden = false;
+    private bool isSaving = false;
+
+    protected override void OnInitialized()
+    {
+        name = Road.Name;
+        hidden = Road.Hidden;
+    }
+
+    private async Task Save()
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            Snackbar.Add("Road name is required", Severity.Warning);
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            var httpClient = HttpClientFactory.CreateClient("API");
+
+            var dto = new UpdateRoadDto
+            {
+                Name = name.Trim(),
+                Waypoints = Road.Waypoints,
+                Hidden = hidden
+            };
+
+            var json = JsonSerializer.Serialize(dto, JsonOptions);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var response = await httpClient.PutAsync($"/map/api/v1/roads/{Road.Id}", content);
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add($"Road '{name}' updated successfully", Severity.Success);
+
+                RoadViewModel? updatedRoad = null;
+                try
+                {
+                    var viewDto = await response.Content.ReadFromJsonAsync<RoadViewDto>(JsonOptions);
+                    if (viewDto != null)
+                    {
+                        updatedRoad = RoadViewModel.FromDto(viewDto);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Snackbar.Add($"Warning: could not parse updated road response ({ex.Message}).", Severity.Warning);
+                }
+
+                await OnRoadUpdated.InvokeAsync(updatedRoad);
+                MudDialog.Close();
+            }
+            else
+            {
+                var errorMsg = await response.Content.ReadAsStringAsync();
+                Snackbar.Add($"Failed to update road: {errorMsg}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error updating road: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+}

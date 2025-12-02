@@ -117,6 +117,46 @@ public interface IUpdateNotificationService
     void NotifyPingDeleted(PingDeleteEventDto deleteEvent);
 
     /// <summary>
+    /// Subscribes to road creation notifications
+    /// </summary>
+    ChannelReader<RoadEventDto> SubscribeToRoadCreated();
+
+    /// <summary>
+    /// Subscribes to road update notifications
+    /// </summary>
+    ChannelReader<RoadEventDto> SubscribeToRoadUpdated();
+
+    /// <summary>
+    /// Subscribes to road deletion notifications
+    /// </summary>
+    ChannelReader<RoadDeleteEventDto> SubscribeToRoadDeleted();
+
+    /// <summary>
+    /// Notifies all subscribers of a road creation
+    /// </summary>
+    void NotifyRoadCreated(RoadEventDto road);
+
+    /// <summary>
+    /// Notifies all subscribers of a road update
+    /// </summary>
+    void NotifyRoadUpdated(RoadEventDto road);
+
+    /// <summary>
+    /// Notifies all subscribers of a road deletion
+    /// </summary>
+    void NotifyRoadDeleted(RoadDeleteEventDto deleteEvent);
+
+    /// <summary>
+    /// Subscribes to overlay update notifications
+    /// </summary>
+    ChannelReader<OverlayEventDto> SubscribeToOverlayUpdated();
+
+    /// <summary>
+    /// Notifies all subscribers of an overlay update
+    /// </summary>
+    void NotifyOverlayUpdated(OverlayEventDto overlay);
+
+    /// <summary>
     /// Subscribes to notification creation events
     /// </summary>
     ChannelReader<NotificationEventDto> SubscribeToNotificationCreated();

@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using ITenantContextAccessor = HnHMapperServer.Core.Interfaces.ITenantContextAccessor;
 
 namespace HnHMapperServer.Tests;
 
@@ -31,8 +32,13 @@ public class CustomMarkerServiceTests : IDisposable
 
         _dbContext = new ApplicationDbContext(options);
 
+        // Mock tenant context accessor (return null to disable tenant filtering in tests)
+        var mockTenantContext = new Mock<ITenantContextAccessor>();
+        mockTenantContext.Setup(x => x.GetCurrentTenantId()).Returns((string?)null);
+        mockTenantContext.Setup(x => x.GetRequiredTenantId()).Throws(new InvalidOperationException("No tenant in test context"));
+
         // Initialize repository
-        _customMarkerRepository = new CustomMarkerRepository(_dbContext);
+        _customMarkerRepository = new CustomMarkerRepository(_dbContext, mockTenantContext.Object);
 
         // Mock icon catalog service to return test icons
         _mockIconCatalog = new Mock<IIconCatalogService>();

@@ -166,4 +166,44 @@ public class MapDataService
             return false;
         }
     }
+
+    /// <summary>
+    /// Fetch overlay data (claims, villages, provinces) for the specified grid coordinates.
+    /// </summary>
+    /// <param name="mapId">The map ID to fetch overlays for</param>
+    /// <param name="coords">Comma-separated coordinates in format "x1_y1,x2_y2,..."</param>
+    /// <returns>List of overlay data with base64-encoded bitpacked data</returns>
+    public async Task<List<OverlayDataDto>> GetOverlaysAsync(int mapId, string coords)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("API");
+            var response = await client.GetAsync($"/map/api/v1/overlays?mapId={mapId}&coords={Uri.EscapeDataString(coords)}");
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to fetch overlays. Status: {StatusCode}", response.StatusCode);
+                return new List<OverlayDataDto>();
+            }
+
+            var overlays = await response.Content.ReadFromJsonAsync<List<OverlayDataDto>>();
+            return overlays ?? new List<OverlayDataDto>();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching overlays for map {MapId}", mapId);
+            return new List<OverlayDataDto>();
+        }
+    }
+}
+
+/// <summary>
+/// DTO for overlay data returned from the API
+/// </summary>
+public class OverlayDataDto
+{
+    public int X { get; set; }
+    public int Y { get; set; }
+    public string Type { get; set; } = string.Empty;
+    public string Data { get; set; } = string.Empty; // Base64-encoded bitpacked data
 }

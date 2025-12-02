@@ -109,5 +109,73 @@ public class SafeJsInterop
             return default;
         }
     }
+
+    /// <summary>
+    /// Safely get a value from localStorage.
+    /// </summary>
+    /// <param name="key">localStorage key</param>
+    /// <returns>Value or null if not found or exception swallowed</returns>
+    public async Task<string?> GetLocalStorageAsync(string key)
+    {
+        try
+        {
+            return await _jsRuntime.InvokeAsync<string?>("localStorage.getItem", key);
+        }
+        catch (TaskCanceledException)
+        {
+            _logger.LogDebug("GetLocalStorage: TaskCanceledException for {Key} (reconnecting)", key);
+            return null;
+        }
+        catch (JSDisconnectedException)
+        {
+            _logger.LogDebug("GetLocalStorage: JSDisconnectedException for {Key} (circuit lost)", key);
+            return null;
+        }
+        catch (ObjectDisposedException)
+        {
+            _logger.LogDebug("GetLocalStorage: ObjectDisposedException for {Key} (disposed)", key);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "GetLocalStorage: Unexpected exception for {Key}", key);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Safely set a value in localStorage.
+    /// </summary>
+    /// <param name="key">localStorage key</param>
+    /// <param name="value">Value to store</param>
+    /// <returns>True if successful, false if exception swallowed</returns>
+    public async Task<bool> SetLocalStorageAsync(string key, string value)
+    {
+        try
+        {
+            await _jsRuntime.InvokeVoidAsync("localStorage.setItem", key, value);
+            return true;
+        }
+        catch (TaskCanceledException)
+        {
+            _logger.LogDebug("SetLocalStorage: TaskCanceledException for {Key} (reconnecting)", key);
+            return false;
+        }
+        catch (JSDisconnectedException)
+        {
+            _logger.LogDebug("SetLocalStorage: JSDisconnectedException for {Key} (circuit lost)", key);
+            return false;
+        }
+        catch (ObjectDisposedException)
+        {
+            _logger.LogDebug("SetLocalStorage: ObjectDisposedException for {Key} (disposed)", key);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SetLocalStorage: Unexpected exception for {Key}", key);
+            return false;
+        }
+    }
 }
 

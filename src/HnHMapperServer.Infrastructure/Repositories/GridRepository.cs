@@ -35,28 +35,53 @@ public class GridRepository : IGridRepository
 
     public async Task SaveGridAsync(GridData gridData)
     {
-        // Grid IDs are client-generated content hashes that can be the same across tenants
-        // The PRIMARY KEY is (Id, TenantId), so each tenant can have their own copy
-        var currentTenantId = _tenantContext.GetRequiredTenantId();
+        // Retry logic for SQLite lock errors during concurrent imports
+        const int maxRetries = 5;
+        var delay = TimeSpan.FromMilliseconds(100);
 
-        // Check if grid exists for current tenant (uses global query filter automatically)
-        var existing = await _context.Grids
-            .FirstOrDefaultAsync(g => g.Id == gridData.Id && g.TenantId == currentTenantId);
-
-        if (existing != null)
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            // Update existing grid for this tenant
-            var entity = MapFromDomain(gridData);
-            _context.Entry(existing).CurrentValues.SetValues(entity);
-        }
-        else
-        {
-            // Insert new grid for this tenant
-            var entity = MapFromDomain(gridData);
-            _context.Grids.Add(entity);
-        }
+            try
+            {
+                // Grid IDs are client-generated content hashes that can be the same across tenants
+                // The PRIMARY KEY is (Id, TenantId), so each tenant can have their own copy
+                var currentTenantId = _tenantContext.GetRequiredTenantId();
 
-        await _context.SaveChangesAsync();
+                // Check if grid exists for current tenant (uses global query filter automatically)
+                var existing = await _context.Grids
+                    .FirstOrDefaultAsync(g => g.Id == gridData.Id && g.TenantId == currentTenantId);
+
+                if (existing != null)
+                {
+                    // Update existing grid for this tenant
+                    var entity = MapFromDomain(gridData);
+                    _context.Entry(existing).CurrentValues.SetValues(entity);
+                }
+                else
+                {
+                    // Insert new grid for this tenant
+                    var entity = MapFromDomain(gridData);
+                    _context.Grids.Add(entity);
+                }
+
+                await _context.SaveChangesAsync();
+                return; // Success
+            }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateException ex) when (
+                ex.InnerException is Microsoft.Data.Sqlite.SqliteException sqliteEx &&
+                (sqliteEx.SqliteErrorCode == 5 || sqliteEx.SqliteErrorCode == 6)) // SQLITE_BUSY or SQLITE_LOCKED
+            {
+                if (attempt == maxRetries)
+                    throw; // Rethrow on final attempt
+
+                // Exponential backoff with jitter
+                await Task.Delay(delay + TimeSpan.FromMilliseconds(Random.Shared.Next(50)));
+                delay *= 2;
+
+                // Detach any tracked entities to avoid state issues on retry
+                _context.ChangeTracker.Clear();
+            }
+        }
     }
 
     public async Task DeleteGridAsync(string gridId)
@@ -166,4 +191,64 @@ public class GridRepository : IGridRepository
         Map = grid.Map,
         TenantId = _tenantContext.GetRequiredTenantId()
     };
+
+    public async Task<HashSet<string>> GetExistingGridIdsAsync(IEnumerable<string> gridIds)
+    {
+        var currentTenantId = _tenantContext.GetRequiredTenantId();
+        var idList = gridIds.ToList();
+        var result = new HashSet<string>();
+
+        // SQLite performs well with IN clauses up to ~500 items
+        const int chunkSize = 500;
+        foreach (var chunk in idList.Chunk(chunkSize))
+        {
+            var existing = await _context.Grids
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(g => g.TenantId == currentTenantId && chunk.Contains(g.Id))
+                .Select(g => g.Id)
+                .ToListAsync();
+
+            result.UnionWith(existing);
+        }
+
+        return result;
+    }
+
+    public async Task SaveGridsBatchAsync(IEnumerable<GridData> grids, bool skipExistenceCheck = false)
+    {
+        var gridList = grids.ToList();
+        if (gridList.Count == 0) return;
+
+        var currentTenantId = _tenantContext.GetRequiredTenantId();
+
+        List<GridData> newGrids;
+        if (skipExistenceCheck)
+        {
+            // Caller has already filtered - skip redundant DB query
+            newGrids = gridList;
+        }
+        else
+        {
+            // Filter out grids that already exist to avoid UNIQUE constraint violations
+            var gridIds = gridList.Select(g => g.Id).ToList();
+            var existingIds = await GetExistingGridIdsAsync(gridIds);
+            newGrids = gridList.Where(g => !existingIds.Contains(g.Id)).ToList();
+        }
+
+        if (newGrids.Count == 0) return;
+
+        var entities = newGrids.Select(g => new GridDataEntity
+        {
+            Id = g.Id,
+            CoordX = g.Coord.X,
+            CoordY = g.Coord.Y,
+            NextUpdate = g.NextUpdate,
+            Map = g.Map,
+            TenantId = currentTenantId
+        }).ToList();
+
+        _context.Grids.AddRange(entities);
+        await _context.SaveChangesAsync();
+    }
 }

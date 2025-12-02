@@ -7,6 +7,7 @@ using HnHMapperServer.Web.Components.Map.Dialogs;
 using HnHMapperServer.Core.Enums;
 using HnHMapperServer.Core.Extensions;
 using HnHMapperServer.Core.DTOs;
+using HnHMapperServer.Services.Interfaces;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.JSInterop;
@@ -59,8 +60,15 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     [Inject] private CustomMarkerStateService CustomMarkerState { get; set; } = default!;
     [Inject] private MapNavigationService MapNavigation { get; set; } = default!;
     [Inject] private LayerVisibilityService LayerVisibility { get; set; } = default!;
+    [Inject] private SafeJsInterop SafeJs { get; set; } = default!;
+    [Inject] private IBuildInfoProvider BuildInfo { get; set; } = default!;
 
     #endregion
+
+    /// <summary>
+    /// Version suffix for cache busting dynamic JS imports (uses commit hash from BuildInfo)
+    /// </summary>
+    private string JsVersion => $"?v={BuildInfo.Get("web").Commit}";
 
     #region Component References
 
@@ -93,6 +101,10 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     private readonly SemaphoreSlim sseCallbackLock = new SemaphoreSlim(1, 1);
     private readonly SemaphoreSlim customMarkerLock = new SemaphoreSlim(1, 1);
 
+    // Hidden marker groups (by image path) - persisted to localStorage
+    private HashSet<string> hiddenMarkerGroups = new();
+    private const string HiddenMarkerGroupsStorageKey = "hiddenMarkerGroups";
+
     #endregion
 
     #region Sidebar State
@@ -110,6 +122,15 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     private bool showMarkerContextMenu = false;
     private bool showCustomMarkerContextMenu = false;
     private bool showMapActionMenu = false; // New: for Create Marker/Ping menu
+
+    // Overlay toggle state (floating buttons)
+    private bool showPClaim = false; // Player claims (red) - off by default
+    private bool showVClaim = false; // Village claims (orange) - off by default
+    private bool showProvince = false; // Province overlay - off by default
+    private bool showThingwallHighlight = false; // Thingwall highlighting (cyan) - off by default
+    private bool showQuestGiverHighlight = false; // Quest giver highlighting (green) - off by default
+    private bool showMarkerFilterMode = false; // Marker filter mode - off by default
+    private bool showRoads = true; // Roads visibility - on by default
     private int contextMenuX = 0;
     private int contextMenuY = 0;
     private (int x, int y) contextCoords;
@@ -117,6 +138,14 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     private int contextCustomMarkerId = 0;
     private bool markerHasTimer = false; // Whether the context menu marker has an active timer
     private bool customMarkerHasTimer = false; // Whether the context menu custom marker has an active timer
+
+    // Road state
+    private List<RoadViewModel> allRoads = new();
+    private bool showRoadContextMenu = false;
+    private int contextRoadId = 0;
+    private bool contextRoadCanEdit = false;
+    private bool isDrawingRoad = false;
+    private int drawingPointsCount = 0;
 
     // Map action menu context (for marker/ping creation)
     private int mapActionMapId = 0;
@@ -324,7 +353,11 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
                 // Mark circuit as fully ready for JS->NET calls
                 circuitFullyReady = true;
 
-                await InitializeBrowserSseAsync();
+                // Load hidden marker groups from localStorage
+                await LoadHiddenMarkerGroupsAsync();
+
+                // NOTE: SSE initialization moved to HandleMapInitialized
+                // because mapView component reference is not available until Leaflet fires its 'load' event
             }
 
             // NOTE: All initialization logic has been moved to event-driven handlers:
@@ -417,13 +450,14 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
             // Enrich markers with timer data before adding to map
             EnrichMarkersWithTimerData(markersToLoad);
 
-            foreach (var marker in markersToLoad)
-            {
-                await mapView.AddMarkerAsync(marker);
-            }
+            // Batch add all markers in a single JS interop call for performance
+            await mapView.AddMarkersAsync(markersToLoad);
 
             // Load custom markers
             await TryRenderPendingCustomMarkersAsync();
+
+            // Load roads
+            await RefreshRoadsAsync();
         }
 
         // Note: No StateHasChanged() here - marker loading should NOT trigger component re-render
@@ -522,9 +556,10 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
                 // Update map view
                 if (mapView != null)
                 {
-                    foreach (var marker in result.AddedMarkers)
+                    // Batch add new markers for performance
+                    if (result.AddedMarkers.Count > 0)
                     {
-                        await mapView.AddMarkerAsync(marker);
+                        await mapView.AddMarkersAsync(result.AddedMarkers);
                     }
 
                     foreach (var marker in result.UpdatedMarkers)
@@ -699,12 +734,24 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         // This is event-driven (triggered by Leaflet 'load') instead of render-cycle polling
         if (mapView != null && MapNavigation.CurrentMapId > 0)
         {
+            // Sync hidden marker groups to JS before loading markers
+            if (hiddenMarkerGroups.Count > 0)
+            {
+                await mapView.SetHiddenMarkerTypesAsync(hiddenMarkerGroups);
+            }
+
             Logger.LogInformation("Loading markers for map {MapId}", MapNavigation.CurrentMapId);
             await LoadMarkersForCurrentMapAsync();
 
             // Sync character tooltip visibility with LayerVisibilityService default state
             await mapView.ToggleCharacterTooltipsAsync(LayerVisibility.ShouldShowCharacterTooltips());
         }
+
+        // Initialize SSE after map is ready - this is the correct place because:
+        // 1. mapView component reference is now guaranteed to be available
+        // 2. Leaflet 'load' event has fired, so all JS interop is ready
+        // 3. circuitFullyReady should already be true from OnAfterRenderAsync
+        await InitializeBrowserSseAsync();
     }
 
     private Task HandleMapChanged(int mapId)
@@ -736,6 +783,21 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         contextMenuX = data.screenX;
         contextMenuY = data.screenY;
 
+        // If in drawing mode, fetch the current points count for the menu
+        if (isDrawingRoad)
+        {
+            try
+            {
+                leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+                drawingPointsCount = await leafletModule.InvokeAsync<int>("getDrawingPointsCount");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Failed to get drawing points count");
+                drawingPointsCount = 0;
+            }
+        }
+
         // Show map action menu
         showMapActionMenu = true;
         showContextMenu = false;
@@ -746,21 +808,31 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
     private void HandleMapClick()
     {
-        if (showContextMenu || showMarkerContextMenu || showCustomMarkerContextMenu || showMapActionMenu)
+        if (showContextMenu || showMarkerContextMenu || showCustomMarkerContextMenu || showMapActionMenu || showRoadContextMenu)
         {
             showContextMenu = false;
             showMarkerContextMenu = false;
             showCustomMarkerContextMenu = false;
             showMapActionMenu = false;
+            showRoadContextMenu = false;
             StateHasChanged();
         }
+    }
+
+    private void HideAllContextMenus()
+    {
+        showContextMenu = false;
+        showMarkerContextMenu = false;
+        showCustomMarkerContextMenu = false;
+        showMapActionMenu = false;
+        showRoadContextMenu = false;
     }
 
     private async Task HandleGoToPing()
     {
         if (mapView != null)
         {
-            leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/leaflet-interop.js");
+            leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
             var success = await leafletModule.InvokeAsync<bool>("jumpToLatestPing");
 
             if (!success)
@@ -1025,6 +1097,69 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
         await SyncLayerVisibility();
         StateHasChanged();  // Force UI re-render
+    }
+
+    private async Task HandleMarkerGroupVisibilityChanged((string ImageType, bool Visible) args)
+    {
+        if (args.Visible)
+        {
+            hiddenMarkerGroups.Remove(args.ImageType);
+        }
+        else
+        {
+            hiddenMarkerGroups.Add(args.ImageType);
+        }
+
+        // Save to localStorage
+        await SaveHiddenMarkerGroupsAsync();
+
+        // Sync to JavaScript
+        if (mapView != null)
+        {
+            await mapView.SetHiddenMarkerTypesAsync(hiddenMarkerGroups);
+
+            // Re-add markers that were previously hidden (if now visible)
+            // The JS addMarker function skips duplicates, so this just adds newly visible markers
+            if (args.Visible)
+            {
+                await LoadMarkersForCurrentMapAsync();
+            }
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task SaveHiddenMarkerGroupsAsync()
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(hiddenMarkerGroups.ToList(), CamelCaseJsonOptions);
+            await SafeJs.SetLocalStorageAsync(HiddenMarkerGroupsStorageKey, json);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to save hidden marker groups to localStorage");
+        }
+    }
+
+    private async Task LoadHiddenMarkerGroupsAsync()
+    {
+        try
+        {
+            var json = await SafeJs.GetLocalStorageAsync(HiddenMarkerGroupsStorageKey);
+            if (!string.IsNullOrEmpty(json))
+            {
+                var groups = JsonSerializer.Deserialize<List<string>>(json, CamelCaseJsonOptions);
+                if (groups != null)
+                {
+                    hiddenMarkerGroups = new HashSet<string>(groups);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load hidden marker groups from localStorage");
+        }
     }
 
     private async Task HandleStateChanged()
@@ -1623,10 +1758,8 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         var markers = MarkerState.GetMarkersForMap(MapNavigation.CurrentMapId).ToList();
         EnrichMarkersWithTimerData(markers);
 
-        foreach (var marker in markers)
-        {
-            await mapView.AddMarkerAsync(marker);
-        }
+        // Batch add all markers in a single JS interop call for performance
+        await mapView.AddMarkersAsync(markers);
     }
 
     /// <summary>
@@ -1863,7 +1996,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
                 return;
             }
 
-            sseModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/map-updates.js");
+            sseModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/map-updates.js{JsVersion}");
             sseDotnetRef ??= DotNetObjectReference.Create(this);
             await sseModule.InvokeVoidAsync("initializeSseUpdates", sseDotnetRef);
             Logger.LogInformation("SSE connection initialized successfully");
@@ -2138,12 +2271,340 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
         if (mapView != null)
         {
-            leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/leaflet-interop.js");
+            leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
             await leafletModule.InvokeVoidAsync("toggleCustomMarkers", show);
         }
 
         await InvokeAsync(StateHasChanged);
     }
+
+    private async Task TogglePClaim()
+    {
+        showPClaim = !showPClaim;
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "ClaimFloor", showPClaim);
+        await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "ClaimOutline", showPClaim);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ToggleVClaim()
+    {
+        showVClaim = !showVClaim;
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "VillageFloor", showVClaim);
+        await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "VillageOutline", showVClaim);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ToggleProvince()
+    {
+        showProvince = !showProvince;
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province0", showProvince);
+        await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province1", showProvince);
+        await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province2", showProvince);
+        await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province3", showProvince);
+        await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province4", showProvince);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ToggleThingwallHighlight()
+    {
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        var newState = !showThingwallHighlight;
+        var success = await leafletModule.InvokeAsync<bool>("setThingwallHighlightEnabled", newState);
+        if (success)
+        {
+            showThingwallHighlight = newState;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ToggleQuestGiverHighlight()
+    {
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        var newState = !showQuestGiverHighlight;
+        var success = await leafletModule.InvokeAsync<bool>("setQuestGiverHighlightEnabled", newState);
+        if (success)
+        {
+            showQuestGiverHighlight = newState;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ToggleMarkerFilterMode()
+    {
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        var newState = !showMarkerFilterMode;
+        var success = await leafletModule.InvokeAsync<bool>("setMarkerFilterModeEnabled", newState);
+        if (success)
+        {
+            showMarkerFilterMode = newState;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ToggleRoads()
+    {
+        showRoads = !showRoads;
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("toggleRoads", showRoads);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    #region Road SSE Event Handlers
+
+    [JSInvokable]
+    public async Task OnRoadCreated(RoadEventDto roadEvent)
+    {
+        if (roadEvent.MapId != MapNavigation.CurrentMapId) return;
+        await RefreshRoadsAsync();
+    }
+
+    [JSInvokable]
+    public async Task OnRoadUpdated(RoadEventDto roadEvent)
+    {
+        if (roadEvent.MapId != MapNavigation.CurrentMapId) return;
+        await RefreshRoadsAsync();
+    }
+
+    [JSInvokable]
+    public async Task OnRoadDeleted(RoadDeleteEventDto deleteEvent)
+    {
+        // Remove road from list
+        var road = allRoads.FirstOrDefault(r => r.Id == deleteEvent.Id);
+        if (road != null)
+        {
+            allRoads.Remove(road);
+            leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+            await leafletModule.InvokeVoidAsync("removeRoad", deleteEvent.Id);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    #endregion
+
+    #region Overlay SSE Event Handlers
+
+    [JSInvokable]
+    public async Task OnOverlayUpdated(OverlayEventDto overlayEvent)
+    {
+        // Invalidate the overlay cache at the specific coordinate and trigger refetch
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("invalidateOverlayAtCoord",
+            overlayEvent.MapId,
+            overlayEvent.CoordX,
+            overlayEvent.CoordY,
+            overlayEvent.OverlayType);
+    }
+
+    #endregion
+
+    #region Road Handlers
+
+    private async Task SelectRoad(RoadViewModel road)
+    {
+        if (road == null) return;
+        HideAllContextMenus();
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("jumpToRoad", road.Id);
+    }
+
+    private async Task ShowEditRoadDialog(RoadViewModel road)
+    {
+        if (road == null) return;
+        HideAllContextMenus();
+
+        var parameters = new DialogParameters<EditRoadDialog>
+        {
+            { x => x.Road, road },
+            { x => x.OnRoadUpdated, EventCallback.Factory.Create<RoadViewModel?>(this, async (updated) =>
+                {
+                    await RefreshRoadsAsync();
+                })
+            }
+        };
+
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        await DialogService.ShowAsync<EditRoadDialog>("Edit Road", parameters, options);
+    }
+
+    private async Task DeleteRoadAsync(RoadViewModel road)
+    {
+        if (road == null) return;
+        HideAllContextMenus();
+
+        var confirmed = await DialogService.ShowMessageBox(
+            "Delete Road",
+            $"Are you sure you want to delete the road '{road.Name}'?",
+            yesText: "Delete", cancelText: "Cancel");
+
+        if (confirmed != true) return;
+
+        try
+        {
+            var httpClient = HttpClientFactory.CreateClient("API");
+            var response = await httpClient.DeleteAsync($"/map/api/v1/roads/{road.Id}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add($"Road '{road.Name}' deleted", Severity.Success);
+                await RefreshRoadsAsync();
+            }
+            else
+            {
+                var errorMsg = await response.Content.ReadAsStringAsync();
+                Snackbar.Add($"Failed to delete road: {errorMsg}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error deleting road: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task HandleJumpToRoad(int roadId)
+    {
+        HideAllContextMenus();
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("jumpToRoad", roadId);
+    }
+
+    private async Task HandleEditRoad(int roadId)
+    {
+        var road = allRoads.FirstOrDefault(r => r.Id == roadId);
+        if (road != null)
+        {
+            await ShowEditRoadDialog(road);
+        }
+    }
+
+    private async Task HandleDeleteRoad(int roadId)
+    {
+        var road = allRoads.FirstOrDefault(r => r.Id == roadId);
+        if (road != null)
+        {
+            await DeleteRoadAsync(road);
+        }
+    }
+
+    private async Task HandleStartDrawRoadFromMenu()
+    {
+        HideAllContextMenus();
+        isDrawingRoad = true;
+        drawingPointsCount = 0;
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("startDrawingRoad");
+        Snackbar.Add("Click to add waypoints. Right-click to finish or cancel.", Severity.Info);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleFinishRoadFromMenu()
+    {
+        HideAllContextMenus();
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("finishDrawingRoadFromMenu");
+        // Note: JsOnRoadDrawingComplete will be called by JS after finishing
+    }
+
+    private async Task HandleCancelRoadFromMenu()
+    {
+        HideAllContextMenus();
+        isDrawingRoad = false;
+        drawingPointsCount = 0;
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeVoidAsync("cancelDrawingRoad");
+        Snackbar.Add("Road drawing cancelled", Severity.Info);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleRoadDrawingComplete((int mapId, List<RoadWaypointDto> waypoints) data)
+    {
+        var (mapId, waypoints) = data;
+        Logger.LogInformation("[Road] HandleRoadDrawingComplete called with mapId={MapId}, waypoints count={Count}",
+            mapId, waypoints?.Count ?? 0);
+
+        isDrawingRoad = false;
+        drawingPointsCount = 0;
+        await InvokeAsync(StateHasChanged);
+
+        if (waypoints == null || waypoints.Count < 2)
+        {
+            Logger.LogWarning("[Road] Insufficient waypoints: {Count}", waypoints?.Count ?? 0);
+            Snackbar.Add("Road requires at least 2 waypoints", Severity.Warning);
+            return;
+        }
+
+        // Log first waypoint to verify deserialization
+        var first = waypoints.First();
+        Logger.LogInformation("[Road] First waypoint: CoordX={CoordX}, CoordY={CoordY}, X={X}, Y={Y}",
+            first.CoordX, first.CoordY, first.X, first.Y);
+
+        var parameters = new DialogParameters<CreateRoadDialog>
+        {
+            { x => x.MapId, mapId },
+            { x => x.Waypoints, waypoints },
+            { x => x.OnRoadCreated, EventCallback.Factory.Create<RoadViewModel?>(this, async (created) =>
+                {
+                    await RefreshRoadsAsync();
+                })
+            }
+        };
+
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        await DialogService.ShowAsync<CreateRoadDialog>("Name Your Road", parameters, options);
+    }
+
+    private async Task HandleRoadContextMenu((int roadId, int screenX, int screenY) data)
+    {
+        var (roadId, screenX, screenY) = data;
+        HideAllContextMenus();
+
+        var road = allRoads.FirstOrDefault(r => r.Id == roadId);
+        if (road == null) return;
+
+        showRoadContextMenu = true;
+        contextRoadId = roadId;
+        contextRoadCanEdit = road.CanEdit;
+        contextMenuX = screenX;
+        contextMenuY = screenY;
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RefreshRoadsAsync()
+    {
+        try
+        {
+            var mapId = MapNavigation.CurrentMapId;
+            if (mapId <= 0) return;
+
+            var httpClient = HttpClientFactory.CreateClient("API");
+            var response = await httpClient.GetAsync($"/map/api/v1/roads?mapId={mapId}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                var roadDtos = await response.Content.ReadFromJsonAsync<List<RoadViewDto>>(CamelCaseJsonOptions);
+                allRoads = roadDtos?.Select(RoadViewModel.FromDto).ToList() ?? new();
+
+                // Update map display
+                leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+                await leafletModule.InvokeVoidAsync("clearAllRoads");
+                foreach (var road in allRoads.Where(r => !r.Hidden))
+                {
+                    await leafletModule.InvokeVoidAsync("addRoad", road);
+                }
+
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error refreshing roads");
+        }
+    }
+
+    #endregion
 
     [JSInvokable]
     public async Task OnCustomMarkerCreated(CustomMarkerEventModel markerEvent)
@@ -2259,7 +2720,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
             if (mapView != null)
             {
                 Console.WriteLine("[Map.razor.cs] mapView is not null, getting leaflet module");
-                leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/leaflet-interop.js");
+                leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
                 Console.WriteLine("[Map.razor.cs] Calling onPingCreated in JS");
                 await leafletModule.InvokeVoidAsync("onPingCreated", pingData);
                 Console.WriteLine("[Map.razor.cs] onPingCreated completed");
@@ -2293,7 +2754,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
             // Forward to JavaScript ping manager
             if (mapView != null)
             {
-                leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/leaflet-interop.js");
+                leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
                 await leafletModule.InvokeVoidAsync("onPingDeleted", deleteData.Id);
 
                 // Check if there are still active pings
@@ -2305,6 +2766,37 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error handling ping deleted event");
+        }
+    }
+
+    #endregion
+
+    #region Overlay Helpers
+
+    /// <summary>
+    /// Handles overlay data requests from JavaScript overlay layer via MapView callback.
+    /// Fetches data from API via MapDataService and returns it to JS.
+    /// </summary>
+    private async Task HandleRequestOverlays((int mapId, string coords) request)
+    {
+        try
+        {
+            Logger.LogDebug("HandleRequestOverlays: Received request for map {MapId}, coords: {Coords}", request.mapId, request.coords);
+
+            // Fetch overlay data from API via MapDataService (server-to-server)
+            var overlays = await MapData.GetOverlaysAsync(request.mapId, request.coords);
+
+            Logger.LogDebug("HandleRequestOverlays: Got {Count} overlays, sending to JS", overlays.Count);
+
+            // Send overlay data back to JavaScript via MapView
+            if (mapView != null)
+            {
+                await mapView.SetOverlayDataAsync(request.mapId, overlays);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error fetching overlay data for map {MapId}", request.mapId);
         }
     }
 

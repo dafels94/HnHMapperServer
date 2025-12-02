@@ -1,0 +1,161 @@
+@rendermode InteractiveServer
+@inject IHttpClientFactory HttpClientFactory
+@inject ISnackbar Snackbar
+@using System.Text.Json
+@using System.Net.Http.Json
+@using System.Text
+@using HnHMapperServer.Core.DTOs
+@using HnHMapperServer.Web.Models
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.Timeline" Class="mr-1" Color="Color.Warning" />
+            Name Your Road
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudStack Spacing="3">
+            <MudTextField @bind-Value="name"
+                         Label="Road Name"
+                         Required="true"
+                         MaxLength="80"
+                         Counter="80"
+                         Immediate="true"
+                         HelperText="Required (max 80 characters)"
+                         Placeholder="e.g., North Trade Route" />
+
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                @Waypoints.Count waypoint(s) drawn on Map @MapId
+            </MudText>
+
+            @if (Waypoints.Count >= 2)
+            {
+                <MudPaper Class="pa-2" Outlined="true">
+                    <MudStack Row="false" Spacing="1">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                            <MudIcon Icon="@Icons.Material.Filled.PlayArrow" Size="Size.Small" Color="Color.Success" />
+                            <MudText Typo="Typo.caption">
+                                Start: (@Waypoints.First().CoordX, @Waypoints.First().CoordY)
+                            </MudText>
+                        </MudStack>
+                        @if (Waypoints.Count > 2)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Info" Class="ml-4">
+                                + @(Waypoints.Count - 2) intermediate point(s)
+                            </MudText>
+                        }
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                            <MudIcon Icon="@Icons.Material.Filled.Stop" Size="Size.Small" Color="Color.Error" />
+                            <MudText Typo="Typo.caption">
+                                End: (@Waypoints.Last().CoordX, @Waypoints.Last().CoordY)
+                            </MudText>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Create" Disabled="@isCreating">
+            @if (isCreating)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                <span class="ms-2">Creating...</span>
+            }
+            else
+            {
+                <span>Create Road</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public EventCallback<RoadViewModel?> OnRoadCreated { get; set; }
+
+    [Parameter] public int MapId { get; set; }
+
+    [Parameter] public List<RoadWaypointDto> Waypoints { get; set; } = new();
+
+    private string name = string.Empty;
+    private bool isCreating = false;
+
+    private async Task Create()
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            Snackbar.Add("Road name is required", Severity.Warning);
+            return;
+        }
+
+        if (Waypoints.Count < 2)
+        {
+            Snackbar.Add("Road requires at least 2 waypoints", Severity.Warning);
+            return;
+        }
+
+        isCreating = true;
+        try
+        {
+            var httpClient = HttpClientFactory.CreateClient("API");
+
+            var dto = new CreateRoadDto
+            {
+                MapId = MapId,
+                Name = name.Trim(),
+                Waypoints = Waypoints
+            };
+
+            var json = JsonSerializer.Serialize(dto, JsonOptions);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var response = await httpClient.PostAsync("/map/api/v1/roads", content);
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add($"Road '{name}' created successfully", Severity.Success);
+
+                RoadViewModel? createdRoad = null;
+                try
+                {
+                    var viewDto = await response.Content.ReadFromJsonAsync<RoadViewDto>(JsonOptions);
+                    if (viewDto != null)
+                    {
+                        createdRoad = RoadViewModel.FromDto(viewDto);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Snackbar.Add($"Warning: could not parse created road response ({ex.Message}).", Severity.Warning);
+                }
+
+                await OnRoadCreated.InvokeAsync(createdRoad);
+                MudDialog.Close();
+            }
+            else
+            {
+                var errorMsg = await response.Content.ReadAsStringAsync();
+                Snackbar.Add($"Failed to create road: {errorMsg}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error creating road: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isCreating = false;
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+}

@@ -11,4 +11,8 @@ public interface IGridRepository
     Task<List<GridData>> GetGridsByMapAsync(int mapId);
     Task DeleteGridsByMapAsync(int mapId);
     Task<bool> AnyGridsExistAsync();
+
+    // Batch operations for optimized import
+    Task<HashSet<string>> GetExistingGridIdsAsync(IEnumerable<string> gridIds);
+    Task SaveGridsBatchAsync(IEnumerable<GridData> grids, bool skipExistenceCheck = false);
 }

@@ -1,0 +1,76 @@
+@using MudBlazor
+
+<!-- Context menu for road operations (shown on right-click on road) -->
+@if (Visible)
+{
+    <div class="context-menu" style="position: fixed; left: @(Left)px; top: @(Top)px; z-index: 2000;">
+        <MudPaper Elevation="4">
+            <MudList T="string" Dense="true">
+                <MudListItem T="string" OnClick="@(() => OnJumpTo.InvokeAsync())">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudIcon Icon="@Icons.Material.Filled.CenterFocusStrong" Size="Size.Small" Color="Color.Info" />
+                        <MudText>Jump to Road</MudText>
+                    </MudStack>
+                </MudListItem>
+                @if (CanEdit)
+                {
+                    <MudDivider />
+                    <MudListItem T="string" OnClick="@(() => OnEdit.InvokeAsync())">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                            <MudIcon Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary" />
+                            <MudText>Edit</MudText>
+                        </MudStack>
+                    </MudListItem>
+                    <MudListItem T="string" OnClick="@(() => OnDelete.InvokeAsync())">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                            <MudIcon Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" />
+                            <MudText>Delete</MudText>
+                        </MudStack>
+                    </MudListItem>
+                }
+            </MudList>
+        </MudPaper>
+    </div>
+}
+
+@code {
+    /// <summary>
+    /// Whether the context menu is visible
+    /// </summary>
+    [Parameter] public bool Visible { get; set; }
+
+    /// <summary>
+    /// X position of the context menu in screen coordinates
+    /// </summary>
+    [Parameter] public int Left { get; set; }
+
+    /// <summary>
+    /// Y position of the context menu in screen coordinates
+    /// </summary>
+    [Parameter] public int Top { get; set; }
+
+    /// <summary>
+    /// ID of the road being operated on
+    /// </summary>
+    [Parameter] public int RoadId { get; set; }
+
+    /// <summary>
+    /// Whether the current user can edit this road
+    /// </summary>
+    [Parameter] public bool CanEdit { get; set; }
+
+    /// <summary>
+    /// Event callback when jump to is selected
+    /// </summary>
+    [Parameter] public EventCallback OnJumpTo { get; set; }
+
+    /// <summary>
+    /// Event callback when edit is selected
+    /// </summary>
+    [Parameter] public EventCallback OnEdit { get; set; }
+
+    /// <summary>
+    /// Event callback when delete is selected
+    /// </summary>
+    [Parameter] public EventCallback OnDelete { get; set; }
+}

@@ -19,6 +19,10 @@ public class UpdateNotificationService : IUpdateNotificationService
     private readonly ConcurrentBag<Channel<CharacterDeltaDto>> _characterDeltaChannels = new();
     private readonly ConcurrentBag<Channel<PingEventDto>> _pingCreatedChannels = new();
     private readonly ConcurrentBag<Channel<PingDeleteEventDto>> _pingDeletedChannels = new();
+    private readonly ConcurrentBag<Channel<RoadEventDto>> _roadCreatedChannels = new();
+    private readonly ConcurrentBag<Channel<RoadEventDto>> _roadUpdatedChannels = new();
+    private readonly ConcurrentBag<Channel<RoadDeleteEventDto>> _roadDeletedChannels = new();
+    private readonly ConcurrentBag<Channel<OverlayEventDto>> _overlayUpdatedChannels = new();
     private readonly ConcurrentBag<Channel<NotificationEventDto>> _notificationCreatedChannels = new();
     private readonly ConcurrentBag<Channel<int>> _notificationReadChannels = new();
     private readonly ConcurrentBag<Channel<int>> _notificationDismissedChannels = new();
@@ -390,6 +394,128 @@ public class UpdateNotificationService : IUpdateNotificationService
         }
 
         // Clean up dead channels
+        foreach (var deadChannel in channelsToRemove)
+        {
+            deadChannel.Writer.TryComplete();
+        }
+    }
+
+    // Road events
+    public ChannelReader<RoadEventDto> SubscribeToRoadCreated()
+    {
+        var channel = Channel.CreateUnbounded<RoadEventDto>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        _roadCreatedChannels.Add(channel);
+        return channel.Reader;
+    }
+
+    public ChannelReader<RoadEventDto> SubscribeToRoadUpdated()
+    {
+        var channel = Channel.CreateUnbounded<RoadEventDto>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        _roadUpdatedChannels.Add(channel);
+        return channel.Reader;
+    }
+
+    public ChannelReader<RoadDeleteEventDto> SubscribeToRoadDeleted()
+    {
+        var channel = Channel.CreateUnbounded<RoadDeleteEventDto>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        _roadDeletedChannels.Add(channel);
+        return channel.Reader;
+    }
+
+    public void NotifyRoadCreated(RoadEventDto road)
+    {
+        var channelsToRemove = new ConcurrentBag<Channel<RoadEventDto>>();
+
+        foreach (var channel in _roadCreatedChannels)
+        {
+            if (!channel.Writer.TryWrite(road))
+            {
+                channelsToRemove.Add(channel);
+            }
+        }
+
+        foreach (var deadChannel in channelsToRemove)
+        {
+            deadChannel.Writer.TryComplete();
+        }
+    }
+
+    public void NotifyRoadUpdated(RoadEventDto road)
+    {
+        var channelsToRemove = new ConcurrentBag<Channel<RoadEventDto>>();
+
+        foreach (var channel in _roadUpdatedChannels)
+        {
+            if (!channel.Writer.TryWrite(road))
+            {
+                channelsToRemove.Add(channel);
+            }
+        }
+
+        foreach (var deadChannel in channelsToRemove)
+        {
+            deadChannel.Writer.TryComplete();
+        }
+    }
+
+    public void NotifyRoadDeleted(RoadDeleteEventDto deleteEvent)
+    {
+        var channelsToRemove = new ConcurrentBag<Channel<RoadDeleteEventDto>>();
+
+        foreach (var channel in _roadDeletedChannels)
+        {
+            if (!channel.Writer.TryWrite(deleteEvent))
+            {
+                channelsToRemove.Add(channel);
+            }
+        }
+
+        foreach (var deadChannel in channelsToRemove)
+        {
+            deadChannel.Writer.TryComplete();
+        }
+    }
+
+    // Overlay events
+    public ChannelReader<OverlayEventDto> SubscribeToOverlayUpdated()
+    {
+        var channel = Channel.CreateUnbounded<OverlayEventDto>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        _overlayUpdatedChannels.Add(channel);
+        return channel.Reader;
+    }
+
+    public void NotifyOverlayUpdated(OverlayEventDto overlay)
+    {
+        var channelsToRemove = new ConcurrentBag<Channel<OverlayEventDto>>();
+
+        foreach (var channel in _overlayUpdatedChannels)
+        {
+            if (!channel.Writer.TryWrite(overlay))
+            {
+                channelsToRemove.Add(channel);
+            }
+        }
+
         foreach (var deadChannel in channelsToRemove)
         {
             deadChannel.Writer.TryComplete();

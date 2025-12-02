@@ -1,0 +1,77 @@
+@using HnHMapperServer.Web.Models
+@using MudBlazor
+
+<style>
+    .road-item {
+        cursor: pointer;
+        padding: 8px 12px;
+        border-radius: 4px;
+        margin-bottom: 4px;
+        background-color: var(--mud-palette-background-gray);
+        transition: background-color 0.15s;
+    }
+    .road-item:hover {
+        background-color: var(--mud-palette-action-default-hover);
+    }
+</style>
+
+<!-- Roads panel with filter and list -->
+<MudTextField T="string"
+              Value="@roadFilter"
+              ValueChanged="@OnFilterChanged"
+              Placeholder="Filter roads..."
+              Adornment="Adornment.Start"
+              AdornmentIcon="@Icons.Material.Outlined.Search"
+              Variant="Variant.Outlined"
+              Margin="Margin.Dense"
+              Immediate="true"
+              Class="mb-3" />
+
+@if (GetFilteredRoads().Any())
+{
+    <MudText Typo="Typo.caption" Class="mb-2">@GetFilteredRoads().Count() road(s)</MudText>
+    <MudList T="string" Dense="true" Clickable="true">
+        @foreach (var road in GetFilteredRoads())
+        {
+            <MudListItem T="string" OnClick="@(() => OnRoadSelected.InvokeAsync(road))">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Style="width: 100%;">
+                    <MudStack Row="false" Spacing="0" Style="flex: 1; min-width: 0;">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                            <MudIcon Icon="@Icons.Material.Filled.Timeline" Size="Size.Small" Color="Color.Warning" />
+                            <MudText Typo="Typo.body2">@road.Name</MudText>
+                        </MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            @GetMapName(road.MapId) • @road.WaypointCount waypoint(s) • @road.RelativeTime
+                        </MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Tertiary" Class="mt-1">
+                            by @road.CreatedBy
+                        </MudText>
+                    </MudStack>
+                    @if (road.CanEdit)
+                    {
+                        <MudStack Row="true" Spacing="0">
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                          Size="Size.Small"
+                                          Color="Color.Primary"
+                                          OnClick="@(() => OnRoadEdit.InvokeAsync(road))"
+                                          OnClickStopPropagation="true"
+                                          Title="Edit road" />
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                          Size="Size.Small"
+                                          Color="Color.Error"
+                                          OnClick="@(() => OnRoadDelete.InvokeAsync(road))"
+                                          OnClickStopPropagation="true"
+                                          Title="Delete road" />
+                        </MudStack>
+                    }
+                </MudStack>
+            </MudListItem>
+        }
+    </MudList>
+}
+else
+{
+    <MudAlert Severity="Severity.Info" Dense="true">
+        @(string.IsNullOrWhiteSpace(roadFilter) ? "No roads available" : "No roads match filter")
+    </MudAlert>
+}
