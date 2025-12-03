@@ -9,15 +9,21 @@ public class MarkerService : IMarkerService
 {
     private readonly IMarkerRepository _markerRepository;
     private readonly IGridRepository _gridRepository;
+    private readonly IPendingMarkerService _pendingMarkerService;
+    private readonly ITenantContextAccessor _tenantContext;
     private readonly ILogger<MarkerService> _logger;
 
     public MarkerService(
         IMarkerRepository markerRepository,
         IGridRepository gridRepository,
+        IPendingMarkerService pendingMarkerService,
+        ITenantContextAccessor tenantContext,
         ILogger<MarkerService> logger)
     {
         _markerRepository = markerRepository;
         _gridRepository = gridRepository;
+        _pendingMarkerService = pendingMarkerService;
+        _tenantContext = tenantContext;
         _logger = logger;
     }
 
@@ -89,6 +95,17 @@ public class MarkerService : IMarkerService
 
     public async Task UpdateMarkerAsync(string gridId, int x, int y, string name, string image, bool ready)
     {
+        // Check if grid exists first
+        var grid = await _gridRepository.GetGridAsync(gridId);
+        if (grid == null)
+        {
+            // Grid doesn't exist yet - queue marker in memory for later
+            var tenantId = _tenantContext.GetRequiredTenantId();
+            _pendingMarkerService.QueueMarker(tenantId, gridId, x, y, name, image);
+            _logger.LogDebug("Marker {Name} queued as pending (grid {GridId} not yet uploaded)", name, gridId);
+            return;
+        }
+
         var key = $"{gridId}_{x}_{y}";
         var existing = await _markerRepository.GetMarkerByKeyAsync(key);
 

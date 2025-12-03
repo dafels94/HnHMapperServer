@@ -121,6 +121,7 @@ builder.Services.AddSingleton<IUpdateNotificationService, UpdateNotificationServ
 builder.Services.AddSingleton<ICharacterService, CharacterService>();
 builder.Services.AddSingleton<HnHMapperServer.Api.Services.MapRevisionCache>();
 builder.Services.AddSingleton<IBuildInfoProvider, BuildInfoProvider>();
+builder.Services.AddSingleton<IPendingMarkerService, PendingMarkerService>();  // In-memory queue for markers before grids exist
 builder.Services.AddScoped<ITileService, TileService>();
 builder.Services.AddScoped<IGridService, GridService>();
 builder.Services.AddScoped<IMarkerService, MarkerService>();

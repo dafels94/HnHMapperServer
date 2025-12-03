@@ -11,7 +11,7 @@ public class OrphanedMarkerCleanupService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<OrphanedMarkerCleanupService> _logger;
-    private static readonly TimeSpan CleanupInterval = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan CleanupInterval = TimeSpan.FromHours(1);
 
     public OrphanedMarkerCleanupService(
         IServiceScopeFactory scopeFactory,
@@ -23,8 +23,8 @@ public class OrphanedMarkerCleanupService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Wait 1 minutes after startup to allow grids to be uploaded first
-        var startupDelay = TimeSpan.FromMinutes(1);
+        // Wait 30 minutes after startup to allow grids to be uploaded first
+        var startupDelay = TimeSpan.FromMinutes(30);
         _logger.LogInformation("Orphaned Marker Cleanup Service starting in {Delay:F1} minutes", startupDelay.TotalMinutes);
         await Task.Delay(startupDelay, stoppingToken);
 

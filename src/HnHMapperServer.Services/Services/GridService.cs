@@ -14,6 +14,7 @@ public class GridService : IGridService
     private readonly IConfigRepository _configRepository;
     private readonly IUpdateNotificationService _updateNotificationService;
     private readonly IMapNameService _mapNameService;
+    private readonly IPendingMarkerService _pendingMarkerService;
     private readonly ITenantContextAccessor _tenantContext;
     private readonly ILogger<GridService> _logger;
 
@@ -24,6 +25,7 @@ public class GridService : IGridService
         IConfigRepository configRepository,
         IUpdateNotificationService updateNotificationService,
         IMapNameService mapNameService,
+        IPendingMarkerService pendingMarkerService,
         ITenantContextAccessor tenantContext,
         ILogger<GridService> logger)
     {
@@ -33,6 +35,7 @@ public class GridService : IGridService
         _configRepository = configRepository;
         _updateNotificationService = updateNotificationService;
         _mapNameService = mapNameService;
+        _pendingMarkerService = pendingMarkerService;
         _tenantContext = tenantContext;
         _logger = logger;
     }
@@ -94,6 +97,13 @@ public class GridService : IGridService
 
                     await _gridRepository.SaveGridAsync(gridData);
                     gridRequests.Add(gridId);
+
+                    // Process any pending markers waiting for this grid
+                    var activated = await _pendingMarkerService.ProcessPendingMarkersForGridAsync(tenantId, gridId);
+                    if (activated > 0)
+                    {
+                        _logger.LogInformation("Activated {Count} pending markers for grid {GridId}", activated, gridId);
+                    }
                 }
             }
 
@@ -162,6 +172,14 @@ public class GridService : IGridService
 
                 await _gridRepository.SaveGridAsync(gridData);
                 gridRequests.Add(gridId);
+
+                // Process any pending markers waiting for this grid
+                var currentTenantId = _tenantContext.GetRequiredTenantId();
+                var activated = await _pendingMarkerService.ProcessPendingMarkersForGridAsync(currentTenantId, gridId);
+                if (activated > 0)
+                {
+                    _logger.LogInformation("Activated {Count} pending markers for grid {GridId}", activated, gridId);
+                }
             }
         }
 
