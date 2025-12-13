@@ -94,9 +94,9 @@ public class MapRepository : IMapRepository
         return (maxId ?? 0) + 1;
     }
 
-    public async Task<List<int>> GetEmptyMapIdsCreatedBeforeAsync(DateTime cutoffUtc)
+    public async Task<List<int>> GetSmallMapIdsCreatedBeforeAsync(DateTime cutoffUtc, int minimumTileCount)
     {
-        // Find maps created before cutoff with no grids and no tiles
+        // Find maps created before cutoff with fewer than the minimum number of tiles
         // Explicit tenant filtering for defense-in-depth to prevent cross-tenant data leakage
         var currentTenantId = _tenantContext.GetCurrentTenantId();
 
@@ -105,21 +105,20 @@ public class MapRepository : IMapRepository
         // If tenant context is available, filter by tenant
         if (!string.IsNullOrEmpty(currentTenantId))
         {
-            // Get all maps with their counts, with explicit tenant filtering on subqueries
+            // Get all maps with their tile counts, with explicit tenant filtering on subqueries
             var allMaps = await query
                 .Where(m => m.TenantId == currentTenantId)
                 .Select(m => new
                 {
                     m.Id,
                     m.CreatedAt,
-                    GridCount = _context.Grids.Count(g => g.Map == m.Id && g.TenantId == currentTenantId),
                     TileCount = _context.Tiles.Count(t => t.MapId == m.Id && t.TenantId == currentTenantId)
                 })
                 .ToListAsync();
 
-            // Filter in memory to find empty maps
+            // Filter in memory to find small maps (fewer than minimum tiles)
             return allMaps
-                .Where(m => m.CreatedAt <= cutoffUtc && m.GridCount == 0 && m.TileCount == 0)
+                .Where(m => m.CreatedAt <= cutoffUtc && m.TileCount < minimumTileCount)
                 .Select(m => m.Id)
                 .ToList();
         }

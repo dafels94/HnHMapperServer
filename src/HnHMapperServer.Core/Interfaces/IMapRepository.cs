@@ -11,8 +11,8 @@ public interface IMapRepository
     Task<int> GetNextMapIdAsync();
     
     /// <summary>
-    /// Gets IDs of maps that were created before the cutoff time and have no grids or tiles
-    /// Used by MapCleanupService to auto-delete empty maps
+    /// Gets IDs of maps that were created before the cutoff time and have fewer than the specified minimum tiles
+    /// Used by MapCleanupService to auto-delete small/empty maps
     /// </summary>
-    Task<List<int>> GetEmptyMapIdsCreatedBeforeAsync(DateTime cutoffUtc);
+    Task<List<int>> GetSmallMapIdsCreatedBeforeAsync(DateTime cutoffUtc, int minimumTileCount);
 }

@@ -5,8 +5,8 @@ using HnHMapperServer.Services.Interfaces;
 namespace HnHMapperServer.Api.BackgroundServices;
 
 /// <summary>
-/// Background service that auto-deletes maps that have remained empty for longer than a configured threshold
-/// Default behavior: deletes maps with no grids/tiles that are older than 1 hour
+/// Background service that auto-deletes maps that have fewer than the minimum tile count and are older than a configured threshold
+/// Default behavior: deletes maps with fewer than 50 tiles that are older than 1 hour
 /// Includes hidden maps in cleanup
 /// </summary>
 public class MapCleanupService : BackgroundService
@@ -33,11 +33,13 @@ public class MapCleanupService : BackgroundService
         await Task.Delay(startupDelay, stoppingToken);
 
         // Read configuration with defaults
-        var deleteAfterMinutes = _configuration.GetValue<int>("Cleanup:DeleteEmptyMapsAfterMinutes", 60);
+        var deleteAfterMinutes = _configuration.GetValue<int>("Cleanup:DeleteSmallMapsAfterMinutes", 60);
+        var minimumTileCount = _configuration.GetValue<int>("Cleanup:MinimumTileCount", 50);
         var cleanupIntervalSeconds = _configuration.GetValue<int>("Cleanup:MapCleanupIntervalSeconds", 600);
 
         _logger.LogInformation(
-            "Map Cleanup Service started - will delete empty maps older than {DeleteAfterMinutes} minutes, checking every {CleanupIntervalSeconds} seconds",
+            "Map Cleanup Service started - will delete maps with fewer than {MinTiles} tiles older than {DeleteAfterMinutes} minutes, checking every {CleanupIntervalSeconds} seconds",
+            minimumTileCount,
             deleteAfterMinutes,
             cleanupIntervalSeconds);
 
@@ -58,25 +60,25 @@ public class MapCleanupService : BackgroundService
                 // Calculate cutoff time
                 var cutoffUtc = DateTime.UtcNow.AddMinutes(-deleteAfterMinutes);
 
-                _logger.LogDebug("Map cleanup check starting (cutoff: {Cutoff:yyyy-MM-dd HH:mm:ss} UTC)", cutoffUtc);
+                _logger.LogDebug("Map cleanup check starting (cutoff: {Cutoff:yyyy-MM-dd HH:mm:ss} UTC, min tiles: {MinTiles})", cutoffUtc, minimumTileCount);
 
-                // Find empty maps older than cutoff
-                var emptyMapIds = await mapRepository.GetEmptyMapIdsCreatedBeforeAsync(cutoffUtc);
+                // Find small maps (fewer than minimum tiles) older than cutoff
+                var smallMapIds = await mapRepository.GetSmallMapIdsCreatedBeforeAsync(cutoffUtc, minimumTileCount);
 
-                _logger.LogDebug("Map cleanup check found {Count} empty map(s) to delete", emptyMapIds.Count);
+                _logger.LogDebug("Map cleanup check found {Count} small map(s) to delete", smallMapIds.Count);
 
-                if (emptyMapIds.Count > 0)
+                if (smallMapIds.Count > 0)
                 {
-                    _logger.LogInformation("Found {Count} empty map(s) to delete (created before {Cutoff:yyyy-MM-dd HH:mm:ss} UTC)",
-                        emptyMapIds.Count, cutoffUtc);
+                    _logger.LogInformation("Found {Count} small map(s) to delete (fewer than {MinTiles} tiles, created before {Cutoff:yyyy-MM-dd HH:mm:ss} UTC)",
+                        smallMapIds.Count, minimumTileCount, cutoffUtc);
 
-                    foreach (var mapId in emptyMapIds)
+                    foreach (var mapId in smallMapIds)
                     {
                         try
                         {
                             // Delete map from database
                             await mapRepository.DeleteMapAsync(mapId);
-                            _logger.LogInformation("Deleted empty map {MapId}", mapId);
+                            _logger.LogInformation("Deleted small map {MapId}", mapId);
 
                             // Notify SSE clients that the map was deleted
                             updateNotificationService.NotifyMapDeleted(mapId);
