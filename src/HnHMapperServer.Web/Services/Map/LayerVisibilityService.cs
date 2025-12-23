@@ -54,6 +54,11 @@ public class LayerVisibilityService
     /// </summary>
     private bool _showGridCoordinates = false;
 
+    /// <summary>
+    /// Whether to cluster markers for performance
+    /// </summary>
+    private bool _showClustering = true;
+
     public LayerVisibilityService(ILogger<LayerVisibilityService> logger)
     {
         _logger = logger;
@@ -142,6 +147,15 @@ public class LayerVisibilityService
         set => _showGridCoordinates = value;
     }
 
+    /// <summary>
+    /// Whether to cluster markers for performance
+    /// </summary>
+    public bool ShowClustering
+    {
+        get => _showClustering;
+        set => _showClustering = value;
+    }
+
     #endregion
 
     #region Layer Visibility Logic
@@ -200,7 +214,8 @@ public class LayerVisibilityService
             ShowQuests = _showQuests,
             ShowQuestTooltips = _showQuestTooltips,
             ShowCustomMarkers = _showCustomMarkers,
-            ShowGridCoordinates = _showGridCoordinates
+            ShowGridCoordinates = _showGridCoordinates,
+            ShowClustering = _showClustering
         };
     }
 
@@ -218,6 +233,7 @@ public class LayerVisibilityService
         _showQuestTooltips = config.ShowQuestTooltips;
         _showCustomMarkers = config.ShowCustomMarkers;
         _showGridCoordinates = config.ShowGridCoordinates;
+        _showClustering = config.ShowClustering;
     }
 
     #endregion
@@ -375,4 +391,5 @@ public class LayerVisibilityConfig
     public bool ShowQuestTooltips { get; set; }
     public bool ShowCustomMarkers { get; set; }
     public bool ShowGridCoordinates { get; set; }
+    public bool ShowClustering { get; set; } = true;
 }

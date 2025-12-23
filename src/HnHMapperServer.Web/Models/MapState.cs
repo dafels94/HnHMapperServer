@@ -15,6 +15,7 @@ public class MapState
     public bool ShowThingwalls { get; set; } = true;
     public bool ShowQuests { get; set; }
     public bool ShowPlayers { get; set; } = true;
+    public bool ShowClustering { get; set; } = true;
 
     // Tooltip toggles
     public bool ShowThingwallTooltips { get; set; } = true;

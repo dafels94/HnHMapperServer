@@ -181,6 +181,16 @@
                         </MudButton>
                     </MudTooltip>
 
+                    <MudTooltip Text="Toggle Marker Clustering (improves performance with many markers)" Placement="Placement.Right">
+                        <MudButton OnClick="@ToggleClustering"
+                                   Variant="Variant.Filled"
+                                   Color="@(showClustering ? Color.Primary : Color.Default)"
+                                   Style="min-width: 40px; min-height: 40px; padding: 8px; border-radius: 50%;">
+                            <MudIcon Icon="@Icons.Material.Filled.BubbleChart"
+                                     Style="@(showClustering ? "" : "opacity: 0.5;")" />
+                        </MudButton>
+                    </MudTooltip>
+
                     <MudTooltip Text="@(string.IsNullOrEmpty(myCharacterName) ? "Set your character first (in Players panel)" : $"Follow {myCharacterName}")" Placement="Placement.Right">
                         <MudButton OnClick="@FollowMyCharacterAsync"
                                    Disabled="@string.IsNullOrEmpty(myCharacterName)"

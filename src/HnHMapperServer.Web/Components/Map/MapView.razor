@@ -326,6 +326,13 @@
         await SafeJs.InvokeVoidSafeAsync(jsModule, "setHiddenMarkerTypes", (object)hiddenTypes.ToArray());
     }
 
+    public async Task SetClusteringEnabled(bool enabled)
+    {
+        if (!initialized || jsModule == null || disposed) return;
+
+        await SafeJs.InvokeVoidSafeAsync(jsModule, "setClusteringEnabled", enabled);
+    }
+
     public async Task SetMapRevisionAsync(int mapId, int revision)
     {
         if (!initialized || jsModule == null || disposed) return;

@@ -105,6 +105,9 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     private HashSet<string> hiddenMarkerGroups = new();
     private const string HiddenMarkerGroupsStorageKey = "hiddenMarkerGroups";
 
+    // Floating button toggle states - persisted to localStorage
+    private const string ToggleStatesStorageKey = "mapToggleStates";
+
     #endregion
 
     #region Sidebar State
@@ -130,6 +133,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     private bool showThingwallHighlight = false; // Thingwall highlighting (cyan) - off by default
     private bool showQuestGiverHighlight = false; // Quest giver highlighting (green) - off by default
     private bool showMarkerFilterMode = false; // Marker filter mode - off by default
+    private bool showClustering = true; // Marker clustering - on by default for performance
     private bool showRoads = true; // Roads visibility - on by default
     private int contextMenuX = 0;
     private int contextMenuY = 0;
@@ -362,6 +366,9 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
                 // Load hidden marker groups from localStorage
                 await LoadHiddenMarkerGroupsAsync();
+
+                // Load floating button toggle states from localStorage
+                await LoadToggleStatesAsync();
 
                 // Load "my character" name from localStorage
                 await LoadMyCharacterAsync();
@@ -764,6 +771,9 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         // 2. Leaflet 'load' event has fired, so all JS interop is ready
         // 3. circuitFullyReady should already be true from OnAfterRenderAsync
         await InitializeBrowserSseAsync();
+
+        // Apply loaded toggle states to JavaScript now that map is fully ready
+        await ApplyToggleStatesToJavaScriptAsync();
     }
 
     private Task HandleMapChanged(int mapId)
@@ -1193,9 +1203,25 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         state.ShowThingwallTooltips = LayerVisibility.ShowThingwallTooltips;
         state.ShowQuests = LayerVisibility.ShowQuests;
         state.ShowQuestTooltips = LayerVisibility.ShowQuestTooltips;
+        state.ShowClustering = LayerVisibility.ShowClustering;
 
         await SyncLayerVisibility();
         StateHasChanged();  // Force UI re-render
+    }
+
+    private async Task ToggleClustering()
+    {
+        showClustering = !showClustering;
+        LayerVisibility.ShowClustering = showClustering;
+        state.ShowClustering = showClustering;
+
+        if (mapView != null)
+        {
+            await mapView.SetClusteringEnabled(showClustering);
+        }
+
+        await SaveToggleStatesAsync();
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task HandleMarkerGroupVisibilityChanged((string ImageType, bool Visible) args)
@@ -1258,6 +1284,132 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "Failed to load hidden marker groups from localStorage");
+        }
+    }
+
+    private async Task SaveToggleStatesAsync()
+    {
+        try
+        {
+            var toggleStates = new Dictionary<string, bool>
+            {
+                ["showPClaim"] = showPClaim,
+                ["showVClaim"] = showVClaim,
+                ["showProvince"] = showProvince,
+                ["showThingwallHighlight"] = showThingwallHighlight,
+                ["showQuestGiverHighlight"] = showQuestGiverHighlight,
+                ["showMarkerFilterMode"] = showMarkerFilterMode,
+                ["showClustering"] = showClustering,
+                ["showRoads"] = showRoads
+            };
+            var json = JsonSerializer.Serialize(toggleStates, CamelCaseJsonOptions);
+            await SafeJs.SetLocalStorageAsync(ToggleStatesStorageKey, json);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to save toggle states to localStorage");
+        }
+    }
+
+    private async Task LoadToggleStatesAsync()
+    {
+        try
+        {
+            var json = await SafeJs.GetLocalStorageAsync(ToggleStatesStorageKey);
+            if (!string.IsNullOrEmpty(json))
+            {
+                var toggleStates = JsonSerializer.Deserialize<Dictionary<string, bool>>(json, CamelCaseJsonOptions);
+                if (toggleStates != null)
+                {
+                    if (toggleStates.TryGetValue("showPClaim", out var pclaim)) showPClaim = pclaim;
+                    if (toggleStates.TryGetValue("showVClaim", out var vclaim)) showVClaim = vclaim;
+                    if (toggleStates.TryGetValue("showProvince", out var province)) showProvince = province;
+                    if (toggleStates.TryGetValue("showThingwallHighlight", out var thingwall)) showThingwallHighlight = thingwall;
+                    if (toggleStates.TryGetValue("showQuestGiverHighlight", out var quest)) showQuestGiverHighlight = quest;
+                    if (toggleStates.TryGetValue("showMarkerFilterMode", out var filter)) showMarkerFilterMode = filter;
+                    if (toggleStates.TryGetValue("showClustering", out var clustering)) showClustering = clustering;
+                    if (toggleStates.TryGetValue("showRoads", out var roads)) showRoads = roads;
+
+                    Logger.LogDebug("Loaded toggle states from localStorage");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load toggle states from localStorage");
+        }
+    }
+
+    /// <summary>
+    /// Applies loaded toggle states to JavaScript after map is initialized.
+    /// Must be called after the map is ready for JS interop.
+    /// </summary>
+    private async Task ApplyToggleStatesToJavaScriptAsync()
+    {
+        try
+        {
+            leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+
+            // Apply PClaim toggle (default is false, so only apply if true)
+            if (showPClaim)
+            {
+                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "ClaimFloor", true);
+                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "ClaimOutline", true);
+            }
+
+            // Apply VClaim toggle (default is false, so only apply if true)
+            if (showVClaim)
+            {
+                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "VillageFloor", true);
+                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "VillageOutline", true);
+            }
+
+            // Apply Province toggle (default is false, so only apply if true)
+            if (showProvince)
+            {
+                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province0", true);
+                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province1", true);
+                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province2", true);
+                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province3", true);
+                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province4", true);
+            }
+
+            // Apply Thingwall highlight toggle (default is false, so only apply if true)
+            if (showThingwallHighlight)
+            {
+                await leafletModule.InvokeVoidAsync("setThingwallHighlightEnabled", true);
+            }
+
+            // Apply Quest giver highlight toggle (default is false, so only apply if true)
+            if (showQuestGiverHighlight)
+            {
+                await leafletModule.InvokeVoidAsync("setQuestGiverHighlightEnabled", true);
+            }
+
+            // Apply Marker filter mode toggle (default is false, so only apply if true)
+            if (showMarkerFilterMode)
+            {
+                await leafletModule.InvokeVoidAsync("setMarkerFilterModeEnabled", true);
+            }
+
+            // Apply Clustering toggle (default is true, so only apply if false)
+            if (!showClustering && mapView != null)
+            {
+                await mapView.SetClusteringEnabled(false);
+            }
+
+            // Apply Roads toggle (default is true, so only apply if false)
+            if (!showRoads)
+            {
+                await leafletModule.InvokeVoidAsync("toggleRoads", false);
+            }
+
+            Logger.LogDebug("Applied toggle states to JavaScript: PClaim={PClaim}, VClaim={VClaim}, Province={Province}, Thingwall={Thingwall}, Quest={Quest}, Filter={Filter}, Clustering={Clustering}, Roads={Roads}",
+                showPClaim, showVClaim, showProvince, showThingwallHighlight, showQuestGiverHighlight, showMarkerFilterMode, showClustering, showRoads);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to apply toggle states to JavaScript");
         }
     }
 
@@ -2469,6 +2621,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
         await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "ClaimFloor", showPClaim);
         await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "ClaimOutline", showPClaim);
+        await SaveToggleStatesAsync();
         await InvokeAsync(StateHasChanged);
     }
 
@@ -2478,6 +2631,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
         await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "VillageFloor", showVClaim);
         await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "VillageOutline", showVClaim);
+        await SaveToggleStatesAsync();
         await InvokeAsync(StateHasChanged);
     }
 
@@ -2490,6 +2644,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province2", showProvince);
         await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province3", showProvince);
         await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province4", showProvince);
+        await SaveToggleStatesAsync();
         await InvokeAsync(StateHasChanged);
     }
 
@@ -2501,6 +2656,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         if (success)
         {
             showThingwallHighlight = newState;
+            await SaveToggleStatesAsync();
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -2513,6 +2669,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         if (success)
         {
             showQuestGiverHighlight = newState;
+            await SaveToggleStatesAsync();
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -2525,6 +2682,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         if (success)
         {
             showMarkerFilterMode = newState;
+            await SaveToggleStatesAsync();
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -2534,6 +2692,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         showRoads = !showRoads;
         leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
         await leafletModule.InvokeVoidAsync("toggleRoads", showRoads);
+        await SaveToggleStatesAsync();
         await InvokeAsync(StateHasChanged);
     }
 

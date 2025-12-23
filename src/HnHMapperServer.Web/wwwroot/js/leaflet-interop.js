@@ -50,6 +50,13 @@ let customMarkerLayer = null;
 let roadLayer = null;
 let currentMapId = 0;
 
+// Clustering state - create both regular and cluster layers, swap between them
+let markerClusterLayer = null;
+let markerRegularLayer = null;
+let customMarkerClusterLayer = null;
+let customMarkerRegularLayer = null;
+let clusteringEnabled = true;
+
 // Debounce timer for zoom operations to reduce excessive tile requests during rapid zoom
 let zoomDebounceTimer = null;
 const ZOOM_DEBOUNCE_MS = 1500; // 1.5 seconds
@@ -193,10 +200,35 @@ export async function initializeMap(mapElementId, dotnetReference) {
     coordLayer = new L.GridLayer.GridCoord({ tileSize: TileSize, opacity: 0 });
     coordLayer.addTo(mapInstance);
 
-    // Marker layers
-    markerLayer = L.layerGroup().addTo(mapInstance);
+    // Marker layers - create both clustered and regular versions
+    // Cluster layers for game markers (default enabled for performance)
+    markerClusterLayer = L.markerClusterGroup({
+        maxClusterRadius: 60,
+        disableClusteringAtZoom: 6,
+        spiderfyOnMaxZoom: true,
+        chunkedLoading: true,
+        animate: true
+    });
+    markerRegularLayer = L.layerGroup();
+
+    // Cluster layers for custom markers
+    customMarkerClusterLayer = L.markerClusterGroup({
+        maxClusterRadius: 60,
+        disableClusteringAtZoom: 6,
+        chunkedLoading: true,
+        animate: true
+    });
+    customMarkerRegularLayer = L.layerGroup();
+
+    // Start with clustering enabled by default
+    clusteringEnabled = true;
+    markerLayer = markerClusterLayer;
+    customMarkerLayer = customMarkerClusterLayer;
+    markerLayer.addTo(mapInstance);
+    customMarkerLayer.addTo(mapInstance);
+
+    // Detailed marker layer stays as regular group (caves only at high zoom)
     detailedMarkerLayer = L.layerGroup().addTo(mapInstance);
-    customMarkerLayer = L.layerGroup().addTo(mapInstance);
     roadLayer = L.layerGroup().addTo(mapInstance);
 
     // Initialize managers
@@ -849,6 +881,76 @@ export function jumpToMarker(markerId) {
 
 export function setHiddenMarkerTypes(types) {
     return MarkerManager.setHiddenMarkerTypes(types, mapInstance);
+}
+
+/**
+ * Enable or disable marker clustering for performance optimization
+ * @param {boolean} enabled - Whether clustering should be enabled
+ * @returns {boolean} - Success status
+ */
+export function setClusteringEnabled(enabled) {
+    if (!mapInstance) {
+        console.warn('[Leaflet] Cannot toggle clustering - map not initialized');
+        return false;
+    }
+
+    if (clusteringEnabled === enabled) {
+        console.log('[Leaflet] Clustering already', enabled ? 'enabled' : 'disabled');
+        return true; // No change needed
+    }
+
+    clusteringEnabled = enabled;
+
+    // Determine old and new layers for game markers
+    const oldMarkerLayer = enabled ? markerRegularLayer : markerClusterLayer;
+    const newMarkerLayer = enabled ? markerClusterLayer : markerRegularLayer;
+
+    // Determine old and new layers for custom markers
+    const oldCustomLayer = enabled ? customMarkerRegularLayer : customMarkerClusterLayer;
+    const newCustomLayer = enabled ? customMarkerClusterLayer : customMarkerRegularLayer;
+
+    // Move game markers from old to new layer
+    const markersList = [];
+    oldMarkerLayer.eachLayer(marker => {
+        markersList.push(marker);
+    });
+    markersList.forEach(marker => {
+        oldMarkerLayer.removeLayer(marker);
+        newMarkerLayer.addLayer(marker);
+    });
+
+    // Move custom markers from old to new layer
+    const customMarkersList = [];
+    oldCustomLayer.eachLayer(marker => {
+        customMarkersList.push(marker);
+    });
+    customMarkersList.forEach(marker => {
+        oldCustomLayer.removeLayer(marker);
+        newCustomLayer.addLayer(marker);
+    });
+
+    // Swap layers on the map
+    if (mapInstance.hasLayer(oldMarkerLayer)) {
+        mapInstance.removeLayer(oldMarkerLayer);
+    }
+    if (mapInstance.hasLayer(oldCustomLayer)) {
+        mapInstance.removeLayer(oldCustomLayer);
+    }
+    newMarkerLayer.addTo(mapInstance);
+    newCustomLayer.addTo(mapInstance);
+
+    // Update the global references
+    markerLayer = newMarkerLayer;
+    customMarkerLayer = newCustomLayer;
+
+    // Update the manager references
+    MarkerManager.setMarkerLayers(markerLayer, detailedMarkerLayer);
+    CustomMarkerManager.initializeCustomMarkerManager(customMarkerLayer, invokeDotNetSafe);
+
+    console.log('[Leaflet] Clustering', enabled ? 'enabled' : 'disabled',
+        '- moved', markersList.length, 'game markers and', customMarkersList.length, 'custom markers');
+
+    return true;
 }
 
 // Custom Marker Management - Delegate to CustomMarkerManager
