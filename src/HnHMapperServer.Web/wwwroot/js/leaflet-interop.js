@@ -737,7 +737,9 @@ export function refreshTiles() {
 // Fetch tile info from the Web service endpoint (used by Blazor JS interop)
 window.fetchTileInfo = async function(url) {
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, {
+            credentials: 'include'  // Include authentication cookie
+        });
         if (!response.ok) {
             return null;
         }
