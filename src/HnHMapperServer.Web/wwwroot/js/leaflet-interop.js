@@ -721,6 +721,33 @@ export function toggleGridCoordinates(visible) {
     return true;
 }
 
+export function refreshTiles() {
+    if (mainLayer) {
+        // Clear negative cache and redraw
+        mainLayer.negativeCache = {};
+        mainLayer.redraw();
+    }
+    if (overlayLayer && overlayLayer.mapId > 0) {
+        overlayLayer.negativeCache = {};
+        overlayLayer.redraw();
+    }
+    return true;
+}
+
+// Fetch tile info from the Web service endpoint (used by Blazor JS interop)
+window.fetchTileInfo = async function(url) {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            return null;
+        }
+        return await response.json();
+    } catch (error) {
+        console.error('Error fetching tile info:', error);
+        return null;
+    }
+};
+
 export function refreshTile(mapId, x, y, z, timestamp) {
     const tileKey = `${x}:${y}:${z}`;
 

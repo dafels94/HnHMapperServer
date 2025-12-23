@@ -34,6 +34,7 @@ public static class MapEndpoints
         group.MapGet("/v1/overlays", GetOverlays);
         group.MapGet("/config", GetConfig);
         group.MapGet("/maps", GetMaps);
+        group.MapGet("/v1/grids", GetGridIds);
         group.MapPost("/admin/wipeTile", WipeTile);
         group.MapPost("/admin/setCoords", SetCoords);
         group.MapPost("/admin/hideMarker", HideMarker);
@@ -230,6 +231,7 @@ public static class MapEndpoints
         var username = context.User.Identity?.Name ?? "(unknown)";
 
         var permissions = Array.Empty<string>();
+        var tenantRole = "";
         if (string.IsNullOrEmpty(tenantId))
         {
             logger.LogWarning("User {Username} ({UserId}) has no TenantId claim. Tenant selection may not have completed.", username, userId);
@@ -259,9 +261,17 @@ public static class MapEndpoints
                 permissions = tenantUser.Permissions
                     .Select(p => p.Permission.ToClaimValue())
                     .ToArray();
+                tenantRole = tenantUser.Role.ToClaimValue();
                 logger.LogInformation("User {Username} in tenant {TenantId} has {Count} permissions: {Permissions}",
                     username, tenantId, permissions.Length, string.Join(", ", permissions));
             }
+        }
+
+        // Check if user is SuperAdmin
+        var isSuperAdmin = context.User.IsInRole(AuthorizationConstants.Roles.SuperAdmin);
+        if (isSuperAdmin)
+        {
+            tenantRole = "SuperAdmin";
         }
 
         var config = await configRepository.GetConfigAsync();
@@ -269,6 +279,7 @@ public static class MapEndpoints
         {
             Title = config.Title,
             Permissions = permissions,
+            TenantRole = tenantRole,
             MainMapId = config.MainMapId,
             AllowGridUpdates = config.AllowGridUpdates,
             AllowNewMaps = config.AllowNewMaps
@@ -1341,4 +1352,50 @@ public static class MapEndpoints
     // DTOs for overlay offset
     private record OverlayOffsetResponse(int CurrentMapId, int OverlayMapId, double OffsetX, double OffsetY);
     private record SaveOverlayOffsetRequest(int CurrentMapId, int OverlayMapId, double OffsetX, double OffsetY);
+
+    /// <summary>
+    /// Get grid IDs for tiles in a specified bounds.
+    /// Used to display grid IDs on the map viewer.
+    /// </summary>
+    private static async Task<IResult> GetGridIds(
+        HttpContext context,
+        [FromQuery] int mapId,
+        [FromQuery] int minX,
+        [FromQuery] int maxX,
+        [FromQuery] int minY,
+        [FromQuery] int maxY,
+        ApplicationDbContext db,
+        ILogger<Program> logger)
+    {
+        if (!context.User.Identity?.IsAuthenticated ?? true)
+            return Results.Unauthorized();
+
+        // Limit bounds to prevent excessive queries
+        var maxRange = 50;
+        if (maxX - minX > maxRange || maxY - minY > maxRange)
+        {
+            return Results.BadRequest($"Coordinate range too large. Maximum {maxRange} tiles per dimension.");
+        }
+
+        try
+        {
+            // Query grids within the bounds for the specified map
+            // Global query filter automatically applies tenant isolation
+            var grids = await db.Grids
+                .AsNoTracking()
+                .Where(g => g.Map == mapId &&
+                           g.CoordX >= minX && g.CoordX <= maxX &&
+                           g.CoordY >= minY && g.CoordY <= maxY)
+                .Select(g => new { x = g.CoordX, y = g.CoordY, gridId = g.Id })
+                .ToListAsync();
+
+            return Results.Json(grids);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error fetching grid IDs for map {MapId} bounds ({MinX},{MinY})-({MaxX},{MaxY})",
+                mapId, minX, minY, maxX, maxY);
+            return Results.Problem("Failed to fetch grid IDs");
+        }
+    }
 }

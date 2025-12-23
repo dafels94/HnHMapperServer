@@ -29,6 +29,7 @@ public class MapState
 
     // User permissions
     public List<string> Permissions { get; set; } = new();
+    public string TenantRole { get; set; } = "";
 
     // Update interval
     public int UpdateIntervalMs { get; set; } = 2000;

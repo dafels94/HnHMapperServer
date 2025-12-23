@@ -367,6 +367,23 @@
                                 </MudStack>
                             </MudListItem>
                         }
+                        @if (isTenantAdmin)
+                        {
+                            <MudDivider />
+                            <MudListItem OnClick="@HandleDeleteTileFromMenu" T="string">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                    <MudIcon Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" />
+                                    <MudText>Delete Tile (@mapActionCoordX, @mapActionCoordY)</MudText>
+                                </MudStack>
+                            </MudListItem>
+                        }
+                        <MudDivider />
+                        <MudListItem OnClick="@HandleShowTileInfo" T="string">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Filled.Info" Size="Size.Small" />
+                                <MudText>Tile Info</MudText>
+                            </MudStack>
+                        </MudListItem>
                     </MudList>
                 }
             </MudPaper>
@@ -385,4 +402,59 @@
                              OnDelete="@(() => HandleDeleteRoad(contextRoadId))" />
         }
     }
+
+    <!-- Tile Info Dialog -->
+    <MudDialog @bind-Visible="showTileInfoDialog" Options="@(new DialogOptions { MaxWidth = MaxWidth.Medium })">
+        <TitleContent>
+            <MudText Typo="Typo.h6">Tile Info</MudText>
+        </TitleContent>
+        <DialogContent>
+            @if (tileInfoLoading)
+            {
+                <MudStack AlignItems="AlignItems.Center">
+                    <MudProgressCircular Indeterminate="true" Size="Size.Small" />
+                    <MudText Typo="Typo.body2">Loading...</MudText>
+                </MudStack>
+            }
+            else if (tileInfoResult != null)
+            {
+                <MudSimpleTable Dense="true" Hover="true" Style="overflow-x: auto;">
+                    <tbody>
+                        <tr>
+                            <td><strong>Coordinates</strong></td>
+                            <td>(@tileInfoResult.X, @tileInfoResult.Y)</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Map ID</strong></td>
+                            <td>@tileInfoResult.MapId</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Grid ID</strong></td>
+                            <td>
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                    <code style="font-size: 0.85em; word-break: break-all;">@tileInfoResult.GridId</code>
+                                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small"
+                                                   OnClick="@(() => CopyToClipboard(tileInfoResult.GridId))"
+                                                   Title="Copy to clipboard" />
+                                </MudStack>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><strong>Next Update</strong></td>
+                            <td>@tileInfoResult.NextUpdate.ToString("yyyy-MM-dd HH:mm:ss UTC")</td>
+                        </tr>
+                    </tbody>
+                </MudSimpleTable>
+            }
+            else
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true">
+                    No tile data at this location (@mapActionCoordX, @mapActionCoordY)
+                </MudAlert>
+            }
+        </DialogContent>
+        <DialogActions>
+            <MudButton OnClick="@(() => showTileInfoDialog = false)">Close</MudButton>
+        </DialogActions>
+    </MudDialog>
 </div>

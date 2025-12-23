@@ -150,6 +150,13 @@
         await SafeJs.InvokeVoidSafeAsync(jsModule, "toggleGridCoordinates", visible);
     }
 
+    public async Task RefreshTilesAsync()
+    {
+        if (!initialized || jsModule == null || disposed) return;
+
+        await SafeJs.InvokeVoidSafeAsync(jsModule, "refreshTiles");
+    }
+
     public async Task AddCharacterAsync(CharacterModel character)
     {
         if (!initialized || jsModule == null || disposed) return;

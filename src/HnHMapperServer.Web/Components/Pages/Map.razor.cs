@@ -82,6 +82,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     private bool isLoaded = false;
     private bool hasMapPermission = false;
     private bool hasMarkersPermission = false;
+    private bool isTenantAdmin => state.TenantRole == "TenantAdmin" || state.TenantRole == "SuperAdmin";
     private bool isReconnecting = false;
     private bool circuitFullyReady = false;  // Prevents JS->NET calls during circuit initialization
 
@@ -161,6 +162,11 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     private int mapActionCoordY = 0;
     private int mapActionX = 0;
     private int mapActionY = 0;
+
+    // Tile info dialog state
+    private bool showTileInfoDialog = false;
+    private TileInfoResult? tileInfoResult = null;
+    private bool tileInfoLoading = false;
 
     #endregion
 
@@ -279,6 +285,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
             MapNavigation.SetMaps(mapsList);
 
             state.Permissions = config.Permissions;
+            state.TenantRole = config.TenantRole ?? "";
 
             // Check permissions
             hasMapPermission = state.Permissions.Any(a => a.Equals(Permission.Map.ToClaimValue(), StringComparison.OrdinalIgnoreCase));
@@ -3146,6 +3153,76 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         showMapActionMenu = false;
         await JsCreatePing(mapActionMapId, mapActionCoordX, mapActionCoordY, mapActionX, mapActionY);
     }
+
+    private async Task HandleDeleteTileFromMenu()
+    {
+        showMapActionMenu = false;
+
+        try
+        {
+            var success = await MapData.WipeTileAsync(mapActionMapId, mapActionCoordX, mapActionCoordY);
+            if (success)
+            {
+                Snackbar.Add($"Tile ({mapActionCoordX}, {mapActionCoordY}) deleted", Severity.Success);
+                // Force map refresh
+                if (mapView != null)
+                {
+                    await mapView.RefreshTilesAsync();
+                }
+            }
+            else
+            {
+                Snackbar.Add("Failed to delete tile", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to delete tile at ({X}, {Y})", mapActionCoordX, mapActionCoordY);
+            Snackbar.Add("Failed to delete tile", Severity.Error);
+        }
+    }
+
+    private async Task HandleShowTileInfo()
+    {
+        showMapActionMenu = false;
+        tileInfoLoading = true;
+        showTileInfoDialog = true;
+        tileInfoResult = null;
+        StateHasChanged();
+
+        try
+        {
+            var url = $"/map/api/v1/grid?mapId={mapActionMapId}&x={mapActionCoordX}&y={mapActionCoordY}";
+            Logger.LogInformation("Fetching tile info from: {Url}", url);
+
+            // Use JS fetch to call the Web service endpoint directly
+            tileInfoResult = await JS.InvokeAsync<TileInfoResult?>("fetchTileInfo", url);
+            Logger.LogInformation("Fetched tile info: GridId={GridId}, MapId={MapId}",
+                tileInfoResult?.GridId, tileInfoResult?.MapId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to fetch tile info for ({X}, {Y})", mapActionCoordX, mapActionCoordY);
+        }
+        finally
+        {
+            tileInfoLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task CopyToClipboard(string text)
+    {
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+        Snackbar.Add("Copied to clipboard", Severity.Info);
+    }
+
+    private record TileInfoResult(
+        [property: System.Text.Json.Serialization.JsonPropertyName("x")] int X,
+        [property: System.Text.Json.Serialization.JsonPropertyName("y")] int Y,
+        [property: System.Text.Json.Serialization.JsonPropertyName("gridId")] string GridId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("mapId")] int MapId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("nextUpdate")] DateTime NextUpdate);
 
     /// <summary>
     /// Creates a ping at the specified location (called from JavaScript Alt+M shortcut or context menu)
