@@ -536,7 +536,8 @@ app.MapGet("/map/api/v1/grids", async (
 }).RequireAuthorization();
 
 // Single tile info endpoint - returns grid ID for a specific tile
-app.MapGet("/map/api/v1/grid", async (
+// NOTE: Using /api/tile-info instead of /map/api/v1/grid because Caddy routes /map/api/* to API service
+app.MapGet("/api/tile-info", async (
     HttpContext context,
     [FromQuery] int mapId,
     [FromQuery] int x,

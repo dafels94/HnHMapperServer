@@ -3192,7 +3192,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
         try
         {
-            var url = $"/map/api/v1/grid?mapId={mapActionMapId}&x={mapActionCoordX}&y={mapActionCoordY}";
+            var url = $"/api/tile-info?mapId={mapActionMapId}&x={mapActionCoordX}&y={mapActionCoordY}";
             Logger.LogInformation("Fetching tile info from: {Url}", url);
 
             // Use JS fetch to call the Web service endpoint directly
