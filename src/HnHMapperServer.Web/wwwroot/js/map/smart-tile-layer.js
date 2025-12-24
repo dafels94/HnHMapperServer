@@ -177,62 +177,20 @@ export const SmartTileLayer = L.TileLayer.extend({
         };
 
         preloader.onload = () => {
-            // Decode image if supported to ensure it's ready before swap (reduces flicker)
-            const decodeAndSwap = () => {
-                // Only update if tile element still exists and belongs to same layer
+            // Swap tile immediately without CSS transitions (better performance)
+            const swapTile = () => {
                 if (tile.el && self._tiles[key]) {
-                    // Implement crossfade for refreshes (smooth transition from old to new)
-                    if (tileState === 'loaded' && tile.el.src) {
-                        // Tile is being refreshed - use crossfade transition
-                        // Save current opacity
-                        const originalOpacity = tile.el.style.opacity || '1';
-
-                        // Fade out to 0.3
-                        tile.el.style.transition = 'opacity 150ms ease-out';
-                        tile.el.style.opacity = '0.3';
-
-                        // Wait for fade out, then swap and fade in
-                        setTimeout(() => {
-                            if (tile.el && self._tiles[key]) {
-                                tile.el.src = newUrl;
-                                tile.el.style.transition = 'opacity 200ms ease-in';
-                                tile.el.style.opacity = originalOpacity;
-
-                                // Clean up transition after animation
-                                setTimeout(() => {
-                                    if (tile.el) {
-                                        tile.el.style.transition = '';
-                                    }
-                                }, 200);
-                            }
-                        }, 150);
-                    } else {
-                        // New tile - simple fade in
-                        tile.el.src = newUrl;
-                        tile.el.style.transition = 'opacity 200ms ease-in';
-
-                        // Clean up transition after animation
-                        setTimeout(() => {
-                            if (tile.el) {
-                                tile.el.style.transition = '';
-                            }
-                        }, 200);
-                    }
-
-                    // Update state to loaded
+                    tile.el.src = newUrl;
                     self.tileStates[cacheKey] = 'loaded';
                 }
+                cleanupPreloader();
             };
 
+            // Decode image if supported, then swap
             if (preloader.decode) {
-                preloader.decode()
-                    .then(decodeAndSwap)
-                    .catch(decodeAndSwap) // Decode failed, but still swap (better than nothing)
-                    .finally(cleanupPreloader); // Always cleanup after decode
+                preloader.decode().then(swapTile).catch(swapTile);
             } else {
-                // Fallback for browsers without decode() support
-                decodeAndSwap();
-                cleanupPreloader();
+                swapTile();
             }
         };
 

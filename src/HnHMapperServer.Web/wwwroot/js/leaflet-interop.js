@@ -146,8 +146,8 @@ export async function initializeMap(mapElementId, dotnetReference) {
                     attributionControl: false,
                     inertia: false,
                     zoomAnimation: true,        // Enable smooth zoom transitions
-                    fadeAnimation: true,         // Re-enable tile fade (we'll avoid black with placeholders)
-                    markerZoomAnimation: true    // Enable marker zoom animations
+                    fadeAnimation: false,        // Disabled for performance (no tile fade = less repaints)
+                    markerZoomAnimation: false   // Disabled for performance (no marker animations during zoom)
                 });
 
                 console.log('[Leaflet] Map instance created successfully');
@@ -168,8 +168,8 @@ export async function initializeMap(mapElementId, dotnetReference) {
         zoomReverse: true,
         tileSize: TileSize,
         errorTileUrl: '',          // Don't show any image for missing/error tiles
-        updateWhenIdle: false,     // Load tiles during zoom animation for smoother transitions (changed from true)
-        updateWhenZooming: true,   // Continue updating tiles during zoom animation (NEW)
+        updateWhenIdle: true,      // Only load tiles when zoom/pan stops (better performance)
+        updateWhenZooming: false,  // DON'T load tiles during zoom animation (prevents 100+ requests per zoom)
         keepBuffer: 2,             // Keep 2 tile buffer around viewport (balance between memory and smooth zoom)
         updateInterval: 100,       // Throttle tile updates during continuous pan (ms) - faster for snappier response
         noWrap: true              // Don't wrap tiles at world edges (Haven map is finite)
@@ -207,7 +207,7 @@ export async function initializeMap(mapElementId, dotnetReference) {
         disableClusteringAtZoom: 6,
         spiderfyOnMaxZoom: true,
         chunkedLoading: true,
-        animate: true
+        animate: false  // Disabled for performance (no cluster animations during zoom)
     });
     markerRegularLayer = L.layerGroup();
 
@@ -216,7 +216,7 @@ export async function initializeMap(mapElementId, dotnetReference) {
         maxClusterRadius: 60,
         disableClusteringAtZoom: 6,
         chunkedLoading: true,
-        animate: true
+        animate: false  // Disabled for performance (no cluster animations during zoom)
     });
     customMarkerRegularLayer = L.layerGroup();
 
@@ -672,8 +672,8 @@ export function setOverlayMap(mapId, offsetX = 0, offsetY = 0) {
             tileSize: TileSize,
             opacity: 0.6,
             errorTileUrl: '',          // Don't show any image for missing/error tiles
-            updateWhenIdle: false,     // Load tiles during zoom animation for smoother transitions (changed from true)
-            updateWhenZooming: true,   // Continue updating tiles during zoom animation (NEW)
+            updateWhenIdle: true,      // Only load tiles when zoom/pan stops (better performance)
+            updateWhenZooming: false,  // DON'T load tiles during zoom animation (prevents 100+ requests per zoom)
             keepBuffer: 2,             // Keep 2 tile buffer around viewport (balance between memory and smooth zoom)
             updateInterval: 100,       // Throttle tile updates during continuous pan (ms) - faster for snappier response
             noWrap: true              // Don't wrap tiles at world edges (Haven map is finite)
