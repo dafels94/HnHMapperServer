@@ -438,8 +438,18 @@ app.MapGet("/map/updates", async (HttpContext context, IHttpClientFactory httpCl
         var apiClient = httpClientFactory.CreateClient("API");
         apiClient.Timeout = Timeout.InfiniteTimeSpan;
 
-        // Forward request to API service
-        var request = new HttpRequestMessage(HttpMethod.Get, "/map/updates");
+    // Forward request to API service.
+    //
+    // IMPORTANT:
+    // The browser SSE client may connect using query parameters (e.g. `?since=<token>`) to avoid
+    // re-downloading and re-parsing the entire initial tile cache on reconnect.
+    //
+    // If we drop the query string here, the API always thinks `since=0` and will resend the full
+    // tile cache snapshot (potentially ~300k tiles), which can freeze the browser for tens of seconds.
+    //
+    // Therefore we MUST forward the query string verbatim.
+    var requestUri = "/map/updates" + (context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty);
+    var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
         request.Headers.Add("Accept", "text/event-stream");
 
         logger.LogWarning("[SSE Proxy] Sending request to API...");
