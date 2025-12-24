@@ -85,6 +85,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     private bool isTenantAdmin => state.TenantRole == "TenantAdmin" || state.TenantRole == "SuperAdmin";
     private bool isReconnecting = false;
     private bool circuitFullyReady = false;  // Prevents JS->NET calls during circuit initialization
+    private bool hiddenMarkerGroupsLoaded = false;  // Ensures filter state is loaded before markers
 
     private Timer? markerUpdateTimer;
     private Timer? permissionCheckTimer;
@@ -373,6 +374,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
                 // Load hidden marker groups from localStorage
                 await LoadHiddenMarkerGroupsAsync();
+                hiddenMarkerGroupsLoaded = true;
 
                 // Load floating button toggle states from localStorage
                 await LoadToggleStatesAsync();
@@ -763,11 +765,17 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         // This is event-driven (triggered by Leaflet 'load') instead of render-cycle polling
         if (mapView != null && MapNavigation.CurrentMapId > 0)
         {
-            // Sync hidden marker groups to JS before loading markers
-            if (hiddenMarkerGroups.Count > 0)
+            // Ensure hidden marker groups are loaded from localStorage BEFORE syncing to JS
+            // This fixes race condition where HandleMapInitialized fires before OnAfterRenderAsync completes
+            if (!hiddenMarkerGroupsLoaded)
             {
-                await mapView.SetHiddenMarkerTypesAsync(hiddenMarkerGroups);
+                await LoadHiddenMarkerGroupsAsync();
+                hiddenMarkerGroupsLoaded = true;
             }
+
+            // ALWAYS sync hidden marker groups to JS before loading markers
+            // (even if empty, to ensure JS state matches C# state)
+            await mapView.SetHiddenMarkerTypesAsync(hiddenMarkerGroups);
 
             Logger.LogInformation("Loading markers for map {MapId}", MapNavigation.CurrentMapId);
             await LoadMarkersForCurrentMapAsync();
