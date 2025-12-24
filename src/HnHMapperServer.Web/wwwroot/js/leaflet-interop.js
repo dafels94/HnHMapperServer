@@ -474,9 +474,10 @@ function prefetchNextZoomTiles() {
         const nextZoomMinY = prefetchRange.minY * 2;
         const nextZoomMaxY = prefetchRange.maxY * 2 + 1;
 
-        // Limit prefetch to avoid overwhelming the browser (max 20 tiles per zoom level)
+        // Limit prefetch to reduce CPU/memory overhead on large maps (300k+ tiles)
+        // Browser cache handles most tiles, so fewer prefetches still maintain snappiness
         let prefetchCount = 0;
-        const maxPrefetch = 20;
+        const maxPrefetch = 10;
 
         for (let x = nextZoomMinX; x <= nextZoomMaxX && prefetchCount < maxPrefetch; x++) {
             for (let y = nextZoomMinY; y <= nextZoomMaxY && prefetchCount < maxPrefetch; y++) {
@@ -533,7 +534,7 @@ function prefetchNextZoomTiles() {
         const prevZoomMaxY = Math.floor(prefetchRange.maxY / 2);
 
         let prefetchCount = 0;
-        const maxPrefetch = 10; // Fewer tiles needed for zoom out
+        const maxPrefetch = 5; // Minimal prefetch for large maps - browser cache handles the rest
 
         for (let x = prevZoomMinX; x <= prevZoomMaxX && prefetchCount < maxPrefetch; x++) {
             for (let y = prevZoomMinY; y <= prevZoomMaxY && prefetchCount < maxPrefetch; y++) {

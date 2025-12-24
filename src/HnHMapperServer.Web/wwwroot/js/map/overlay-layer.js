@@ -296,10 +296,10 @@ function createOverlayLayer() {
 
         _renderOverlays: function(canvas, coords, scaleFactor, startGridX, startGridY) {
             const ctx = canvas.getContext('2d');
-            ctx.clearRect(0, 0, TileSize, TileSize);
 
-            // Calculate pixel size for each source pixel at this zoom
-            const pixelSize = TileSize / (scaleFactor * TileSize);
+            // Use ImageData for batch pixel manipulation (50-100x faster than fillRect per pixel)
+            const imageData = ctx.createImageData(TileSize, TileSize);
+            const pixels = imageData.data;
 
             // Iterate over all grid tiles covered by this canvas tile
             for (let gx = startGridX; gx < startGridX + scaleFactor; gx++) {
@@ -308,8 +308,9 @@ function createOverlayLayer() {
                     if (!overlayData) continue;
 
                     // Calculate offset within canvas for this grid
-                    const canvasOffsetX = (gx - startGridX) * TileSize / scaleFactor;
-                    const canvasOffsetY = (gy - startGridY) * TileSize / scaleFactor;
+                    const canvasOffsetX = Math.floor((gx - startGridX) * TileSize / scaleFactor);
+                    const canvasOffsetY = Math.floor((gy - startGridY) * TileSize / scaleFactor);
+                    const gridSize = Math.floor(TileSize / scaleFactor);
 
                     // Render each enabled overlay type
                     for (const overlayType of enabledOverlayTypes) {
@@ -323,19 +324,38 @@ function createOverlayLayer() {
 
                         // For zoomed-out views, sample the overlay data
                         if (scaleFactor > 1) {
-                            this._renderScaledOverlay(ctx, data, canvasOffsetX, canvasOffsetY,
-                                TileSize / scaleFactor, color, isOutline, scaleFactor);
+                            this._renderScaledToImageData(pixels, data, canvasOffsetX, canvasOffsetY,
+                                gridSize, color, isOutline, scaleFactor);
                         } else {
-                            // 1:1 zoom - render pixel by pixel
-                            this._renderFullOverlay(ctx, data, canvasOffsetX, canvasOffsetY, color, isOutline);
+                            // 1:1 zoom - render pixel by pixel to ImageData
+                            this._renderFullToImageData(pixels, data, canvasOffsetX, canvasOffsetY, color, isOutline);
                         }
                     }
                 }
             }
+
+            // Single putImageData call instead of 10,000+ fillRect calls
+            ctx.putImageData(imageData, 0, 0);
         },
 
-        _renderFullOverlay: function(ctx, data, offsetX, offsetY, color, isOutline) {
-            ctx.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${color[3] / 255})`;
+        // Blend a pixel into ImageData with alpha compositing
+        _blendPixel: function(pixels, x, y, r, g, b, a) {
+            if (x < 0 || x >= TileSize || y < 0 || y >= TileSize) return;
+            const i = (y * TileSize + x) * 4;
+            const srcAlpha = a / 255;
+            const dstAlpha = pixels[i + 3] / 255;
+            const outAlpha = srcAlpha + dstAlpha * (1 - srcAlpha);
+
+            if (outAlpha > 0) {
+                pixels[i] = (r * srcAlpha + pixels[i] * dstAlpha * (1 - srcAlpha)) / outAlpha;
+                pixels[i + 1] = (g * srcAlpha + pixels[i + 1] * dstAlpha * (1 - srcAlpha)) / outAlpha;
+                pixels[i + 2] = (b * srcAlpha + pixels[i + 2] * dstAlpha * (1 - srcAlpha)) / outAlpha;
+                pixels[i + 3] = outAlpha * 255;
+            }
+        },
+
+        _renderFullToImageData: function(pixels, data, offsetX, offsetY, color, isOutline) {
+            const r = color[0], g = color[1], b = color[2], a = color[3];
 
             if (isOutline) {
                 // For outlines, only draw pixels that are on the border
@@ -350,7 +370,7 @@ function createOverlayLayer() {
                                 (y === TileSize - 1 || !isBitSet(data, x, y + 1));
 
                             if (isBorder) {
-                                ctx.fillRect(offsetX + x, offsetY + y, 1, 1);
+                                this._blendPixel(pixels, offsetX + x, offsetY + y, r, g, b, a);
                             }
                         }
                     }
@@ -360,19 +380,16 @@ function createOverlayLayer() {
                 for (let y = 0; y < TileSize; y++) {
                     for (let x = 0; x < TileSize; x++) {
                         if (isBitSet(data, x, y)) {
-                            ctx.fillRect(offsetX + x, offsetY + y, 1, 1);
+                            this._blendPixel(pixels, offsetX + x, offsetY + y, r, g, b, a);
                         }
                     }
                 }
             }
         },
 
-        _renderScaledOverlay: function(ctx, data, offsetX, offsetY, size, color, isOutline, scaleFactor) {
-            // For zoomed-out views, sample the overlay data
+        _renderScaledToImageData: function(pixels, data, offsetX, offsetY, size, color, isOutline, scaleFactor) {
+            const r = color[0], g = color[1], b = color[2], a = color[3];
             const sampleStep = Math.max(1, Math.floor(scaleFactor));
-            const pixelSize = size / TileSize;
-
-            ctx.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${color[3] / 255})`;
 
             // Sample the overlay data at intervals
             for (let sy = 0; sy < TileSize; sy += sampleStep) {
@@ -401,10 +418,17 @@ function createOverlayLayer() {
                     }
 
                     if (anySet && (!isOutline || isBorder)) {
-                        const canvasX = offsetX + (sx / TileSize) * size;
-                        const canvasY = offsetY + (sy / TileSize) * size;
-                        const rectSize = Math.max(1, size / TileSize * sampleStep);
-                        ctx.fillRect(canvasX, canvasY, rectSize, rectSize);
+                        // Calculate canvas position for this sample
+                        const canvasX = Math.floor(offsetX + (sx / TileSize) * size);
+                        const canvasY = Math.floor(offsetY + (sy / TileSize) * size);
+                        const rectSize = Math.max(1, Math.floor(size / TileSize * sampleStep));
+
+                        // Fill the rect area in ImageData
+                        for (let py = 0; py < rectSize; py++) {
+                            for (let px = 0; px < rectSize; px++) {
+                                this._blendPixel(pixels, canvasX + px, canvasY + py, r, g, b, a);
+                            }
+                        }
                     }
                 }
             }
