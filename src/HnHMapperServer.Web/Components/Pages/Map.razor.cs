@@ -585,8 +585,8 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
                 // Update map view
                 if (mapView != null)
                 {
-                    // Batch add new markers for performance
-                    if (result.AddedMarkers.Count > 0)
+                    // Batch add new markers for performance (only if markers layer is enabled)
+                    if (result.AddedMarkers.Count > 0 && (LayerVisibility.ShowMarkers || showMarkerFilterMode))
                     {
                         await mapView.AddMarkersAsync(result.AddedMarkers);
                     }

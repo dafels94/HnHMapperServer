@@ -170,7 +170,7 @@ export async function initializeMap(mapElementId, dotnetReference) {
         errorTileUrl: '',          // Don't show any image for missing/error tiles
         updateWhenIdle: false,     // Load tiles during zoom animation for smoother transitions (changed from true)
         updateWhenZooming: true,   // Continue updating tiles during zoom animation (NEW)
-        keepBuffer: 3,             // Keep 3 tile buffer around viewport for smoother zoom/pan (increased from 2)
+        keepBuffer: 1,             // Keep 1 tile buffer around viewport (reduced from 3 for memory savings)
         updateInterval: 100,       // Throttle tile updates during continuous pan (ms) - faster for snappier response
         noWrap: true              // Don't wrap tiles at world edges (Haven map is finite)
     });
@@ -606,6 +606,26 @@ export function changeMap(mapId) {
     }
     keysToDelete.forEach(key => delete mainLayer.negativeCache[key]);
 
+    // Memory cleanup: Clear tileStates for other maps (they're stale)
+    const tileStateKeys = Object.keys(mainLayer.tileStates);
+    tileStateKeys.forEach(key => {
+        if (!key.startsWith(`${mapId}:`)) {
+            delete mainLayer.tileStates[key];
+        }
+    });
+
+    // Memory cleanup: Limit number of cached maps to 3 most recent
+    const MAX_CACHED_MAPS = 3;
+    const cachedMapIds = Object.keys(mainLayer.cache).map(Number).filter(id => id !== mapId);
+    if (cachedMapIds.length >= MAX_CACHED_MAPS) {
+        // Remove oldest cached maps (keep only most recent ones)
+        const mapsToRemove = cachedMapIds.slice(0, cachedMapIds.length - MAX_CACHED_MAPS + 1);
+        mapsToRemove.forEach(oldMapId => {
+            delete mainLayer.cache[oldMapId];
+            console.debug('[changeMap] Evicted cache for map', oldMapId);
+        });
+    }
+
     // Force tile reload by invalidating the layer
     mainLayer.redraw();
 
@@ -642,7 +662,7 @@ export function setOverlayMap(mapId, offsetX = 0, offsetY = 0) {
             errorTileUrl: '',          // Don't show any image for missing/error tiles
             updateWhenIdle: false,     // Load tiles during zoom animation for smoother transitions (changed from true)
             updateWhenZooming: true,   // Continue updating tiles during zoom animation (NEW)
-            keepBuffer: 3,             // Keep 3 tile buffer around viewport for smoother zoom/pan (increased from 2)
+            keepBuffer: 1,             // Keep 1 tile buffer around viewport (reduced from 3 for memory savings)
             updateInterval: 100,       // Throttle tile updates during continuous pan (ms) - faster for snappier response
             noWrap: true              // Don't wrap tiles at world edges (Haven map is finite)
         });
