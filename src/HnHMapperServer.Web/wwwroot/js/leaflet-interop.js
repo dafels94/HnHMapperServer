@@ -170,7 +170,7 @@ export async function initializeMap(mapElementId, dotnetReference) {
         errorTileUrl: '',          // Don't show any image for missing/error tiles
         updateWhenIdle: true,      // Only load tiles when zoom/pan stops (better performance)
         updateWhenZooming: false,  // DON'T load tiles during zoom animation (prevents 100+ requests per zoom)
-        keepBuffer: 2,             // Keep 2 tile buffer around viewport (balance between memory and smooth zoom)
+        keepBuffer: 1,             // Reduced from 2 to 1 for large maps (300k tiles) - saves ~50% tile memory
         updateInterval: 100,       // Throttle tile updates during continuous pan (ms) - faster for snappier response
         noWrap: true              // Don't wrap tiles at world edges (Haven map is finite)
     });
@@ -411,9 +411,17 @@ export async function initializeMap(mapElementId, dotnetReference) {
     mapInstance.on('moveend', () => {
         if (mainLayer) {
             mainLayer.clearVisibleNegativeCache();
+            // Force tile pruning to release memory from tiles outside viewport
+            // Critical for large maps (300k tiles) to prevent GB memory accumulation
+            if (mainLayer._pruneTiles) {
+                mainLayer._pruneTiles();
+            }
         }
         if (overlayLayer && overlayLayer.mapId > 0) {
             overlayLayer.clearVisibleNegativeCache();
+            if (overlayLayer._pruneTiles) {
+                overlayLayer._pruneTiles();
+            }
         }
     });
 
@@ -679,7 +687,7 @@ export function setOverlayMap(mapId, offsetX = 0, offsetY = 0) {
             errorTileUrl: '',          // Don't show any image for missing/error tiles
             updateWhenIdle: true,      // Only load tiles when zoom/pan stops (better performance)
             updateWhenZooming: false,  // DON'T load tiles during zoom animation (prevents 100+ requests per zoom)
-            keepBuffer: 2,             // Keep 2 tile buffer around viewport (balance between memory and smooth zoom)
+            keepBuffer: 1,             // Reduced from 2 to 1 for large maps (300k tiles) - saves ~50% tile memory
             updateInterval: 100,       // Throttle tile updates during continuous pan (ms) - faster for snappier response
             noWrap: true              // Don't wrap tiles at world edges (Haven map is finite)
         });

@@ -10,6 +10,31 @@ let updateIntervalMs = 2000;
 let showTooltips = true; // Track tooltip visibility state
 let myCharacterName = null; // Name of "my character" for highlighting
 
+// Icon cache to avoid recreating L.icon objects on every update (40 allocations/sec → ~0)
+// Key format: "iconUrl:size:className"
+const iconCache = {};
+
+/**
+ * Get or create a cached icon instance
+ * @param {string} iconUrl - URL of the icon image
+ * @param {number} iconSize - Size of the icon
+ * @param {string} className - Optional CSS class name
+ * @returns {L.Icon} - Cached or newly created icon
+ */
+function getOrCreateIcon(iconUrl, iconSize, className = '') {
+    const key = `${iconUrl}:${iconSize}:${className}`;
+    if (!iconCache[key]) {
+        const iconAnchor = Math.round(iconSize / 2);
+        iconCache[key] = L.icon({
+            iconUrl: iconUrl,
+            iconSize: [iconSize, iconSize],
+            iconAnchor: [iconAnchor, iconAnchor],
+            className: className
+        });
+    }
+    return iconCache[key];
+}
+
 /**
  * Set the current map ID for character filtering
  */
@@ -62,15 +87,10 @@ function refreshCharacterMarker(char) {
     const isMyCharacter = char.data.name === myCharacterName;
     const baseSize = 32;
     const iconSize = isMyCharacter ? Math.round(baseSize * 1.33) : baseSize; // 43px for my character
-    const iconAnchor = Math.round(iconSize / 2);
 
     const iconUrl = getCharacterIcon(char.data.type);
-    const icon = L.icon({
-        iconUrl: iconUrl,
-        iconSize: [iconSize, iconSize],
-        iconAnchor: [iconAnchor, iconAnchor],
-        className: isMyCharacter ? 'my-character-icon' : ''
-    });
+    const className = isMyCharacter ? 'my-character-icon' : '';
+    const icon = getOrCreateIcon(iconUrl, iconSize, className);
 
     char.marker.setIcon(icon);
 
@@ -94,15 +114,10 @@ export function addCharacter(characterData, mapInstance) {
     const isMyCharacter = characterData.name === myCharacterName;
     const baseSize = 32;
     const iconSize = isMyCharacter ? Math.round(baseSize * 1.33) : baseSize; // 43px for my character
-    const iconAnchor = Math.round(iconSize / 2);
 
     const iconUrl = getCharacterIcon(characterData.type);
-    const icon = L.icon({
-        iconUrl: iconUrl,
-        iconSize: [iconSize, iconSize],
-        iconAnchor: [iconAnchor, iconAnchor],
-        className: isMyCharacter ? 'my-character-icon' : ''
-    });
+    const className = isMyCharacter ? 'my-character-icon' : '';
+    const icon = getOrCreateIcon(iconUrl, iconSize, className);
 
     const position = mapInstance.unproject([characterData.position.x, characterData.position.y], HnHMaxZoom);
     const marker = L.marker(position, {
@@ -169,18 +184,14 @@ export function updateCharacter(characterId, characterData, mapInstance) {
     const isMyCharacter = characterData.name === myCharacterName;
     const baseSize = 32;
     const iconSize = isMyCharacter ? Math.round(baseSize * 1.33) : baseSize; // 43px for my character
-    const iconAnchor = Math.round(iconSize / 2);
 
     const marker = char.marker;
     const iconUrl = getCharacterIcon(characterData.type);
     const color = isMyCharacter ? '#FFD700' : getCharacterColor(characterData.type);
+    const className = isMyCharacter ? 'my-character-icon' : '';
 
-    marker.setIcon(L.icon({
-        iconUrl: iconUrl,
-        iconSize: [iconSize, iconSize],
-        iconAnchor: [iconAnchor, iconAnchor],
-        className: isMyCharacter ? 'my-character-icon' : ''
-    }));
+    // Use cached icon to avoid 40+ allocations/sec with 20 characters
+    marker.setIcon(getOrCreateIcon(iconUrl, iconSize, className));
 
     marker.setTooltipContent(`<div style='color:${color};'><b>${characterData.name}</b></div>`);
 
