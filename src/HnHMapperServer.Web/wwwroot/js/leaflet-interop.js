@@ -275,7 +275,9 @@ export async function initializeMap(mapElementId, dotnetReference) {
     });
 
     // Event handlers
-    mapInstance.on('drag', () => {
+    // Use 'dragend' instead of 'drag' to avoid triggering Blazor render cycles during pan
+    // This matches how zoom uses 'zoomend' - URL only updates when movement stops
+    mapInstance.on('dragend', () => {
         const point = mapInstance.project(mapInstance.getCenter(), mapInstance.getZoom());
         const coords = {
             x: Math.floor(point.x / TileSize),
