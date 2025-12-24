@@ -5,6 +5,7 @@ window.notificationCenter = {
     dotNetRef: null,
     eventSource: null,
     isInitialized: false,
+    listenersAttached: false, // Prevent duplicate listeners on reconnect
 
     /**
      * Initialize the notification center
@@ -24,10 +25,18 @@ window.notificationCenter = {
      * Attach event listeners to the global SSE event source
      */
     attachEventListeners: function () {
+        // Prevent duplicate listeners on circuit reconnect
+        if (this.listenersAttached) {
+            console.log('[NotificationCenter] Listeners already attached, skipping');
+            return;
+        }
+
         // Wait for the global SSE connection to be established
+        // Poll every 500ms (not 100ms) to reduce CPU during initialization
         const checkConnection = setInterval(() => {
             if (window.mapUpdates && window.mapUpdates.eventSource) {
                 const eventSource = window.mapUpdates.eventSource;
+                this.listenersAttached = true;
 
                 // Listen for notification created events
                 eventSource.addEventListener('notificationCreated', (e) => {
@@ -84,7 +93,7 @@ window.notificationCenter = {
                 clearInterval(checkConnection);
                 console.log('[NotificationCenter] Event listeners attached');
             }
-        }, 100);
+        }, 500); // Poll every 500ms (not 100ms) to reduce CPU
 
         // Stop checking after 10 seconds
         setTimeout(() => {
@@ -153,8 +162,11 @@ window.notificationCenter = {
 
             const audio = new Audio(soundFile);
             audio.volume = 0.5; // 50% volume
+            // Cleanup after playback ends to prevent memory leak
+            audio.onended = () => { audio.src = ''; };
             audio.play().catch((error) => {
                 console.warn('[NotificationCenter] Could not play sound:', error);
+                audio.src = ''; // Cleanup on error too
             });
         } catch (error) {
             console.warn('[NotificationCenter] Error playing sound:', error);

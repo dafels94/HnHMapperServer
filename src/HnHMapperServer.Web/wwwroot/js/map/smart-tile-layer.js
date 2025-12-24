@@ -170,6 +170,12 @@ export const SmartTileLayer = L.TileLayer.extend({
         const preloader = new Image();
         const self = this;
 
+        // Cleanup function to release Image memory after use
+        const cleanupPreloader = () => {
+            preloader.onload = preloader.onerror = null;
+            preloader.src = '';
+        };
+
         preloader.onload = () => {
             // Decode image if supported to ensure it's ready before swap (reduces flicker)
             const decodeAndSwap = () => {
@@ -221,10 +227,12 @@ export const SmartTileLayer = L.TileLayer.extend({
             if (preloader.decode) {
                 preloader.decode()
                     .then(decodeAndSwap)
-                    .catch(decodeAndSwap); // Decode failed, but still swap (better than nothing)
+                    .catch(decodeAndSwap) // Decode failed, but still swap (better than nothing)
+                    .finally(cleanupPreloader); // Always cleanup after decode
             } else {
                 // Fallback for browsers without decode() support
                 decodeAndSwap();
+                cleanupPreloader();
             }
         };
 
@@ -233,6 +241,7 @@ export const SmartTileLayer = L.TileLayer.extend({
             self._addToNegativeCache(cacheKey);
             // Reset state
             self.tileStates[cacheKey] = tileState;
+            cleanupPreloader();
         };
 
         preloader.src = newUrl;

@@ -502,7 +502,12 @@ function prefetchNextZoomTiles() {
                 const tileUrl = `/map/grids/${mainLayer.mapId}/${hnhZoom}/${x}_${y}.png?v=${revision}`;
 
                 // Prefetch using Image() - this warms the browser cache
+                // Clean up after load/error to prevent memory leak
                 const prefetchImg = new Image();
+                prefetchImg.onload = prefetchImg.onerror = function() {
+                    this.onload = this.onerror = null;
+                    this.src = '';
+                };
                 prefetchImg.src = tileUrl;
 
                 prefetchCount++;
@@ -553,8 +558,12 @@ function prefetchNextZoomTiles() {
                 // Build URL for prefetch
                 const tileUrl = `/map/grids/${mainLayer.mapId}/${hnhZoom}/${x}_${y}.png?v=${revision}`;
 
-                // Prefetch using Image()
+                // Prefetch using Image() - clean up after load/error to prevent memory leak
                 const prefetchImg = new Image();
+                prefetchImg.onload = prefetchImg.onerror = function() {
+                    this.onload = this.onerror = null;
+                    this.src = '';
+                };
                 prefetchImg.src = tileUrl;
 
                 prefetchCount++;

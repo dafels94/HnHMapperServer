@@ -164,9 +164,12 @@ function playPingSound() {
     try {
         const audio = new Audio('/sounds/ping.wav');
         audio.volume = 0.5; // 50% volume
+        // Cleanup after playback ends to prevent memory leak
+        audio.onended = () => { audio.src = ''; };
         audio.play().catch(err => {
             // Browser may block autoplay, this is expected
             console.log('[PingManager] Audio playback blocked (user interaction may be required)');
+            audio.src = ''; // Cleanup on error too
         });
     } catch (err) {
         console.warn('[PingManager] Error playing ping sound:', err);
