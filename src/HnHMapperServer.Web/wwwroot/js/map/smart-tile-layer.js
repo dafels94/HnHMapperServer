@@ -29,9 +29,15 @@ export const SmartTileLayer = L.TileLayer.extend({
     processingQueue: false, // Whether we're currently processing the queue
 
     getTileUrl: function (coords) {
-        // Don't request tiles if mapId is invalid (0 or negative)
+        // Don't request tiles if mapId is invalid (0 or negative).
+        //
+        // IMPORTANT:
+        // Returning an empty string here causes the <img> to fire "error" events in many browsers,
+        // which can create a storm of expensive error handlers when Leaflet is trying to load tiles.
+        // Instead we return Leaflet's built-in 1x1 transparent image URL so the tile "loads" instantly
+        // with no network traffic and no error spam.
         if (!this.mapId || this.mapId <= 0) {
-            return '';  // Return empty string to skip tile request
+            return L.Util.emptyImageUrl;
         }
 
         // Get grid offsets (in grid coordinates, constant across zoom)
@@ -76,8 +82,12 @@ export const SmartTileLayer = L.TileLayer.extend({
         if (negativeExpiry) {
             const now = Date.now();
             if (now < negativeExpiry) {
-                // Still within negative cache TTL - skip tile request
-                return '';
+                // Still within negative cache TTL - skip tile request.
+                //
+                // IMPORTANT:
+                // Returning '' would still trigger an <img> error event and force Leaflet to do work.
+                // Returning a transparent pixel avoids both network retries AND expensive error handling.
+                return L.Util.emptyImageUrl;
             } else {
                 // Negative cache expired - clear it and retry with nonce
                 delete this.negativeCache[cacheKey];
@@ -317,29 +327,86 @@ export const SmartTileLayer = L.TileLayer.extend({
 
     // Override createTile to track loading state
     createTile: function (coords, done) {
-        const tile = L.TileLayer.prototype.createTile.call(this, coords, done);
-
-        // Track loading state
+        // CRITICAL PERFORMANCE + CORRECTNESS FIX:
+        //
+        // Leaflet's GridLayer expects the `done(err, tile)` callback to be invoked **exactly once**
+        // per tile. The previous implementation called the base TileLayer.createTile with `done`
+        // (so Leaflet invoked it), and ALSO invoked `done` again from extra DOM event listeners.
+        //
+        // That double-invocation amplifies Leaflet's internal bookkeeping work, and when many tiles
+        // fail to load at once (common when switching tabs and the map refreshes), it results in the
+        // DevTools warning spam you're seeing:
+        //   "[Violation] 'error' handler took N ms"
+        // and can freeze the tab for seconds.
+        //
+        // The correct approach is to pass a *wrapped* callback into the base implementation.
+        // This lets us update `tilesLoading` and negative-cache missing tiles without calling `done` twice.
+        const self = this;
         this.tilesLoading++;
 
-        // Wrap the done callback to track when tile finishes loading
-        const originalDone = done;
-        const self = this;
+        // Guard so that even if a browser misfires events, we never invoke the original done twice.
+        let finished = false;
 
-        tile.addEventListener('load', function() {
+        function wrappedDone(err, tile) {
+            if (finished) return;
+            finished = true;
+
+            // Always decrement loading counter (clamped).
             self.tilesLoading = Math.max(0, self.tilesLoading - 1);
-            if (originalDone) originalDone(null, tile);
-        });
 
-        tile.addEventListener('error', function() {
-            self.tilesLoading = Math.max(0, self.tilesLoading - 1);
-            // Hide the broken image by clearing src and making invisible
-            tile.src = '';
-            tile.style.visibility = 'hidden';
-            if (originalDone) originalDone(null, tile);
-        });
+            // On errors, hide the broken image and negative-cache the tile coordinates so we don't keep
+            // retrying the same missing tile in tight loops.
+            if (err) {
+                try {
+                    // Hide broken tile UI.
+                    tile.src = L.Util.emptyImageUrl;
+                    tile.style.visibility = 'hidden';
 
-        return tile;
+                    // Compute the SAME cacheKey format used in getTileUrl():
+                    // `${mapId}:${x}:${y}:${hnhZoom}`
+                    //
+                    // This must account for:
+                    // - zoomReverse / zoomOffset (HnH zoom differs from Leaflet zoom)
+                    // - overlay offsets (offsetX/offsetY)
+                    const leafletZoom = coords?.z ?? (self._map ? self._map.getZoom() : HnHMaxZoom);
+
+                    // Convert Leaflet zoom -> HnH zoom (what the server URL uses).
+                    let hnhZ = leafletZoom;
+                    if (self.options.zoomReverse) {
+                        hnhZ = self.options.maxZoom - leafletZoom;
+                    }
+                    hnhZ = hnhZ + (self.options.zoomOffset || 0);
+
+                    // Apply grid offsets in the same way as getTileUrl() (rounded tile offsets).
+                    const gridOffsetX = self.offsetX || 0;
+                    const gridOffsetY = self.offsetY || 0;
+                    const scaleAtLeafletZoom = SCALE_FACTORS[leafletZoom] || (1 << (HnHMaxZoom - leafletZoom));
+                    const tileOffsetX = gridOffsetX / scaleAtLeafletZoom;
+                    const tileOffsetY = gridOffsetY / scaleAtLeafletZoom;
+                    const requestedX = coords.x + Math.round(tileOffsetX);
+                    const requestedY = coords.y + Math.round(tileOffsetY);
+
+                    const cacheKey = `${self.mapId}:${requestedX}:${requestedY}:${hnhZ}`;
+                    self._addToNegativeCache(cacheKey);
+                } catch {
+                    // Never let error handling crash Leaflet's tile pipeline.
+                }
+
+                // IMPORTANT:
+                // We deliberately report "success" to Leaflet (`done(null, tile)`) even though the tile failed.
+                // This prevents Leaflet from retrying aggressively and keeps the map interactive.
+                // The tile will render as transparent until it becomes available.
+                if (typeof done === 'function') done(null, tile);
+                return;
+            }
+
+            // Normal success path.
+            if (typeof done === 'function') done(null, tile);
+        }
+
+        // Let Leaflet create the <img> tile element and hook up its internal load/error pipeline,
+        // but route completion through our wrapper to keep counts/caches consistent.
+        return L.TileLayer.prototype.createTile.call(this, coords, wrappedDone);
     },
 
     // Add entry to negative cache with LRU eviction
@@ -352,14 +419,32 @@ export const SmartTileLayer = L.TileLayer.extend({
             return;
         }
 
-        // Evict oldest entries if at max size
-        while (this.negativeCacheKeys.length >= this.negativeCacheMaxSize) {
-            const oldestKey = this.negativeCacheKeys.shift();
-            delete this.negativeCache[oldestKey];
+        // Evict oldest entries if at max size.
+        //
+        // IMPORTANT:
+        // Avoid Array.shift() here. shift() is O(n) and can become extremely expensive when a burst of
+        // missing tiles inserts thousands of negative-cache entries (common on tab-switch reloads).
+        if (typeof this._negativeCacheKeysHead !== 'number') {
+            this._negativeCacheKeysHead = 0;
         }
 
-        // Also clean up expired entries periodically (every 100 insertions)
-        if (this.negativeCacheKeys.length > 0 && this.negativeCacheKeys.length % 100 === 0) {
+        while ((this.negativeCacheKeys.length - this._negativeCacheKeysHead) >= this.negativeCacheMaxSize) {
+            const oldestKey = this.negativeCacheKeys[this._negativeCacheKeysHead++];
+            if (oldestKey) {
+                delete this.negativeCache[oldestKey];
+            }
+        }
+
+        // Periodically compact the key queue to keep memory bounded.
+        if (this._negativeCacheKeysHead > 1000 && this._negativeCacheKeysHead > (this.negativeCacheKeys.length / 2)) {
+            this.negativeCacheKeys = this.negativeCacheKeys.slice(this._negativeCacheKeysHead);
+            this._negativeCacheKeysHead = 0;
+        }
+
+        // Also clean up expired entries periodically (every 100 insertions).
+        // NOTE: Use the "active length" (minus head) so compaction doesn't break the cadence.
+        const activeLen = this.negativeCacheKeys.length - (this._negativeCacheKeysHead || 0);
+        if (activeLen > 0 && activeLen % 100 === 0) {
             this._cleanExpiredNegativeCache();
         }
 
@@ -373,7 +458,9 @@ export const SmartTileLayer = L.TileLayer.extend({
         const now = Date.now();
         const validKeys = [];
 
-        for (let i = 0; i < this.negativeCacheKeys.length; i++) {
+        // Respect head index if we've been evicting without shift().
+        const start = typeof this._negativeCacheKeysHead === 'number' ? this._negativeCacheKeysHead : 0;
+        for (let i = start; i < this.negativeCacheKeys.length; i++) {
             const key = this.negativeCacheKeys[i];
             if (this.negativeCache[key] && this.negativeCache[key] > now) {
                 validKeys.push(key);
@@ -383,6 +470,7 @@ export const SmartTileLayer = L.TileLayer.extend({
         }
 
         this.negativeCacheKeys = validKeys;
+        this._negativeCacheKeysHead = 0;
     },
 
     // Update loading overlay based on tiles loading

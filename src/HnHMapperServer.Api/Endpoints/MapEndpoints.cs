@@ -480,9 +480,12 @@ public static class MapEndpoints
         // NOTE: Cache is currently treated as a monotonically increasing timestamp-like value.
         // This is a pragmatic best-effort mechanism; if clients provide a too-new value, they may miss
         // updates that occurred while disconnected.
-        int sinceCache = 0;
+        // NOTE: Tile cache tokens are Unix milliseconds (long). Do NOT use int here.
+        // The tile uploader uses DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() (~1.7e12),
+        // which overflows int and would break delta reconnect (since would never filter).
+        long sinceCache = 0;
         if (context.Request.Query.TryGetValue("since", out var sinceValues) &&
-            int.TryParse(sinceValues.ToString(), out var parsedSince) &&
+            long.TryParse(sinceValues.ToString(), out var parsedSince) &&
             parsedSince > 0)
         {
             sinceCache = parsedSince;
@@ -501,26 +504,55 @@ public static class MapEndpoints
                 sinceCache, tenantId, tenantTiles.Count);
         }
 
-        var tileCache = tenantTiles.Select(t => new TileCacheDto
-        {
-            M = t.MapId,
-            X = t.Coord.X,
-            Y = t.Coord.Y,
-            Z = t.Zoom,
-            T = (int)t.Cache
-        }).ToList();
+        // IMPORTANT PERFORMANCE NOTE:
+        // The full initial tile cache can be very large (~300k entries). Serializing it as one giant JSON array
+        // and sending it as a single SSE message forces the browser to do one huge `JSON.parse(...)`, which can
+        // freeze the tab for many seconds.
+        //
+        // Even though we now support `?since=...` to avoid resending the full cache on reconnects, we still want
+        // the initial sync (since=0) to be safe.
+        //
+        // Strategy:
+        // - Stream the initial tile cache as multiple smaller SSE messages (default `data:` event).
+        // - Each message contains a small JSON array chunk (e.g. 2k tiles).
+        // - The client already treats default SSE messages as "tile updates batches", so this is compatible.
+        const int initialTileChunkSize = 2000;
+        var totalTileCount = tenantTiles.Count;
 
         logger.LogDebug("SSE: Sending {Count} tiles for tenant {TenantId} (since={Since})",
-            tileCache.Count, tenantId, sinceCache);
+            totalTileCount, tenantId, sinceCache);
 
-        // Only write an initial tile payload when there is something meaningful to send.
-        // When `since` is used it's common to have 0 deltas, and avoiding an empty message
-        // reduces pointless client work.
-        if (tileCache.Count > 0)
+        if (totalTileCount > 0)
         {
-            var initialData = JsonSerializer.Serialize(tileCache);
-            await context.Response.WriteAsync($"data: {initialData}\n\n");
-            await context.Response.Body.FlushAsync();
+            var chunk = new List<TileCacheDto>(initialTileChunkSize);
+            foreach (var t in tenantTiles)
+            {
+                chunk.Add(new TileCacheDto
+                {
+                    M = t.MapId,
+                    X = t.Coord.X,
+                    Y = t.Coord.Y,
+                    Z = t.Zoom,
+                    // IMPORTANT: Cache is Unix milliseconds (long). Do not truncate to int.
+                    T = t.Cache
+                });
+
+                if (chunk.Count >= initialTileChunkSize)
+                {
+                    var json = JsonSerializer.Serialize(chunk);
+                    await context.Response.WriteAsync($"data: {json}\n\n");
+                    await context.Response.Body.FlushAsync();
+                    chunk.Clear();
+                }
+            }
+
+            // Send any remaining tiles in the final chunk.
+            if (chunk.Count > 0)
+            {
+                var json = JsonSerializer.Serialize(chunk);
+                await context.Response.WriteAsync($"data: {json}\n\n");
+                await context.Response.Body.FlushAsync();
+            }
         }
 
         // Send initial map revisions so clients can display version and set cache-busting immediately
@@ -636,7 +668,8 @@ public static class MapEndpoints
                             X = tileData.Coord.X,
                             Y = tileData.Coord.Y,
                             Z = tileData.Zoom,
-                            T = (int)tileData.Cache
+                            // IMPORTANT: Cache is Unix milliseconds (long). Do not truncate to int.
+                            T = tileData.Cache
                         });
                     }
                 }

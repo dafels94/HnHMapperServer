@@ -452,7 +452,7 @@ app.MapGet("/map/updates", async (HttpContext context, IHttpClientFactory httpCl
     var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
         request.Headers.Add("Accept", "text/event-stream");
 
-        logger.LogWarning("[SSE Proxy] Sending request to API...");
+    logger.LogWarning("[SSE Proxy] Sending request to API: {RequestUri}", requestUri);
         var response = await apiClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, context.RequestAborted);
         
         logger.LogWarning("[SSE Proxy] API response status: {StatusCode}", response.StatusCode);

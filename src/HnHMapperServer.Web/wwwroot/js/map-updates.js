@@ -104,6 +104,9 @@ function connectSse() {
         // Default message handler (tile updates - batched every 5s)
         eventSource.onmessage = function (event) {
             try {
+                // NOTE:
+                // The server may stream a large initial tile cache as many smaller SSE messages.
+                // Each message still contains a JSON array, so the logic here remains the same.
                 const tiles = JSON.parse(event.data);
                 if (tiles && Array.isArray(tiles) && tiles.length > 0) {
                     // Update last seen cache token BEFORE applying (so reconnect uses a fresh `since` marker).

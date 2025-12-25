@@ -177,20 +177,19 @@ export async function initializeMap(mapElementId, dotnetReference) {
     mainLayer.mapId = 0; // Explicitly initialize to ensure it's always a number (not undefined)
     mainLayer.addTo(mapInstance);
 
-    // Mark missing tiles as temporarily invalid (TTL-based) to avoid repeated network requests
-    // After TTL expires, tiles will be retried automatically
-    mainLayer.on('tileerror', (e) => {
-        try {
-            const z = e?.coords?.z ?? mapInstance.getZoom();
-            const x = e?.coords?.x;
-            const y = e?.coords?.y;
-            if (typeof x === 'number' && typeof y === 'number' && typeof z === 'number') {
-                const cacheKey = `${mainLayer.mapId}:${x}:${y}:${z}`;
-                // Set expiry timestamp: current time + TTL (2 minutes to align with server cache)
-                mainLayer.negativeCache[cacheKey] = Date.now() + mainLayer.negativeCacheTTL;
-            }
-        } catch { /* ignore */ }
-    });
+    // NOTE:
+    // We intentionally do NOT attach a Leaflet-level 'tileerror' handler here.
+    //
+    // Rationale:
+    // - SmartTileLayer now handles negative-caching inside its own `createTile` error path, using the
+    //   exact same cacheKey format as `getTileUrl()` (including zoomReverse + overlay offsets).
+    // - The previous handler built cache keys using Leaflet zoom/coords directly and wrote into
+    //   `negativeCache` without updating `negativeCacheKeys`, which could:
+    //   - fail to prevent retries (key mismatch)
+    //   - bypass LRU/expiry cleanup paths
+    //   - generate large error storms and browser freezes on tab-switch reloads
+    //
+    // Keeping the logic inside SmartTileLayer keeps it consistent and performant.
 
     // Overlay layer is created lazily when first used (via setOverlayMap with valid mapId > 0)
     // This cuts tile traffic in half by default, as overlay is only needed when comparing maps
@@ -698,19 +697,9 @@ export function setOverlayMap(mapId, offsetX = 0, offsetY = 0) {
         overlayLayer.offsetX = 0;
         overlayLayer.offsetY = 0;
 
-        // Mark missing overlay tiles as temporarily invalid (TTL-based)
-        overlayLayer.on('tileerror', (e) => {
-            try {
-                const z = e?.coords?.z ?? mapInstance.getZoom();
-                const x = e?.coords?.x;
-                const y = e?.coords?.y;
-                if (typeof x === 'number' && typeof y === 'number' && typeof z === 'number') {
-                    const cacheKey = `${overlayLayer.mapId}:${x}:${y}:${z}`;
-                    // Set expiry timestamp: current time + TTL (2 minutes to align with server cache)
-                    overlayLayer.negativeCache[cacheKey] = Date.now() + overlayLayer.negativeCacheTTL;
-                }
-            } catch { /* ignore */ }
-        });
+        // NOTE:
+        // We intentionally do NOT attach a Leaflet-level 'tileerror' handler here.
+        // SmartTileLayer now handles negative caching internally in a key-consistent way.
 
         overlayLayer.addTo(mapInstance);
     }

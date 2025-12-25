@@ -27,7 +27,7 @@ public class TileCacheDto
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; } // Zoom
-    public int T { get; set; } // Timestamp
+    public long T { get; set; } // Timestamp (Unix milliseconds)
 }
 
 /// <summary>
