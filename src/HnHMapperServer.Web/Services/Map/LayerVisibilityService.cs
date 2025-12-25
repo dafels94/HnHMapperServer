@@ -22,7 +22,12 @@ public class LayerVisibilityService
     /// <summary>
     /// Whether to show markers
     /// </summary>
-    private bool _showMarkers = false;
+    // Markers are ON by default. Users can disable them from the sidebar.
+    //
+    // This fixes a confusing UX trap:
+    // - If marker filter mode is OFF on initial load, users expect to see markers.
+    // - Previously, default ShowMarkers=false meant "filter mode OFF" looked like "markers are broken".
+    private bool _showMarkers = true;
 
     /// <summary>
     /// Whether to show thingwall markers
@@ -364,7 +369,7 @@ public class LayerVisibilityService
     {
         _showPlayers = true;
         _showPlayerTooltips = true;
-        _showMarkers = false;
+        _showMarkers = true;
         _showThingwalls = true;
         _showThingwallTooltips = false;
         _showQuests = true;

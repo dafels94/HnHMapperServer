@@ -10,7 +10,10 @@ public class MapState
 
     // Visibility toggles
     public bool ShowGridCoordinates { get; set; }
-    public bool ShowMarkers { get; set; } = false;
+    // Markers are ON by default. This matches typical map viewer expectations:
+    // - "Filter mode OFF" should show all markers (not zero markers).
+    // - Users can still disable markers explicitly via the sidebar layer toggle, which is now persisted.
+    public bool ShowMarkers { get; set; } = true;
     public bool ShowCustomMarkers { get; set; } = true;
     public bool ShowThingwalls { get; set; } = true;
     public bool ShowQuests { get; set; }

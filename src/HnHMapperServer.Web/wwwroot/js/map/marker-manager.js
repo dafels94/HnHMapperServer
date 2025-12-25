@@ -24,6 +24,11 @@ let questGiverHighlightEnabled = false;
 // Marker filter mode state (hide all markers except highlighted ones)
 let markerFilterModeEnabled = false;
 
+// Master visibility toggle for markers layer (from sidebar Layers panel)
+// When false, markers are stored in allMarkerData but not rendered.
+// This allows toggling markers on/off without losing data.
+let showMarkersEnabled = true;
+
 // Thingwall tracking for Voronoi adjacency computation
 const thingwallMarkers = {}; // thingwallId -> {marker, data}
 let jumpConnectionsEnabled = false;
@@ -136,6 +141,12 @@ export function addMarker(markerData, mapInstance, skipStorage = false) {
         return false;
     }
 
+    // Master visibility toggle (sidebar "Markers" layer switch)
+    // If disabled, don't render any markers (they're still stored in allMarkerData for later)
+    if (!showMarkersEnabled) {
+        return false;
+    }
+
     const iconUrl = `/${markerData.image}.png`;
     const isCustom = markerData.image === "gfx/terobjs/mm/custom";
     const isCave = markerData.name.toLowerCase() === "cave";
@@ -152,9 +163,10 @@ export function addMarker(markerData, mapInstance, skipStorage = false) {
         }
     }
 
-    // Use larger icons for highlighted thingwalls (48px vs 36px default)
-    let iconSize = shouldHighlight ? [48, 48] : (isCustom && !isCave ? [36, 36] : [36, 36]);
-    let iconAnchor = shouldHighlight ? [24, 24] : (isCustom && !isCave ? [11, 21] : [18, 18]);
+    // All markers use consistent 36x36 size - highlighting is purely via CSS glow effect
+    // (Scaling markers causes positioning conflicts with Leaflet's anchor system)
+    let iconSize = isCustom && !isCave ? [36, 36] : [36, 36];
+    let iconAnchor = isCustom && !isCave ? [11, 21] : [18, 18];
 
     let icon;
     if (markerData.timerText) {
@@ -457,12 +469,9 @@ function updateMarkerHighlighting() {
 
         const el = mark.marker.getElement();
         if (el) {
-            // Toggle CSS highlight classes (for glow effect and scale transform)
+            // Toggle CSS highlight classes for glow effect (no scaling - it breaks positioning)
             el.classList.toggle('thingwall-highlighted', shouldHighlightThingwall);
             el.classList.toggle('questgiver-highlighted', shouldHighlightQuestGiver);
-            // Use CSS scale transform for size change (48/36 = 1.33)
-            el.style.transform = shouldHighlight ? 'scale(1.33)' : '';
-            el.style.transformOrigin = 'center center';
         }
 
         // Toggle tooltip permanence and visibility
@@ -506,8 +515,18 @@ export function setThingwallHighlightEnabled(enabled, mapInstance) {
 
     thingwallHighlightEnabled = enabled;
 
-    // OPTIMIZED: Use CSS toggle instead of full rebuild (10-20x faster)
-    updateMarkerHighlighting();
+    // Highlight toggles interact with filter mode:
+    // - If filter mode is OFF: highlighting is a visual change only (CSS/tooltip permanence),
+    //   so we can update existing marker elements cheaply.
+    // - If filter mode is ON: highlighting determines *which markers are allowed to exist*
+    //   (filter mode = "only highlighted markers"). In that case we must rebuild to add/remove
+    //   markers based on the new highlight rules.
+    if (markerFilterModeEnabled) {
+        rebuildAllMarkers(mapInstance);
+    } else {
+        // OPTIMIZED: Use CSS toggle instead of full rebuild (10-20x faster)
+        updateMarkerHighlighting();
+    }
 
     console.log(`[MarkerManager] Thingwall highlighting ${enabled ? 'enabled' : 'disabled'}`);
     return true;
@@ -531,8 +550,14 @@ export function setQuestGiverHighlightEnabled(enabled, mapInstance) {
 
     questGiverHighlightEnabled = enabled;
 
-    // OPTIMIZED: Use CSS toggle instead of full rebuild (10-20x faster)
-    updateMarkerHighlighting();
+    // See detailed explanation in setThingwallHighlightEnabled():
+    // In filter mode, highlight toggles change the *membership* of the visible marker set.
+    if (markerFilterModeEnabled) {
+        rebuildAllMarkers(mapInstance);
+    } else {
+        // OPTIMIZED: Use CSS toggle instead of full rebuild (10-20x faster)
+        updateMarkerHighlighting();
+    }
 
     console.log(`[MarkerManager] Quest giver highlighting ${enabled ? 'enabled' : 'disabled'}`);
     return true;
@@ -565,9 +590,27 @@ export function setMarkerFilterModeEnabled(enabled, mapInstance) {
 
     markerFilterModeEnabled = enabled;
 
-    // OPTIMIZED: Use CSS visibility toggle instead of full rebuild (10-20x faster)
-    // This avoids 5000+ DOM removals/additions per toggle
-    updateMarkerFilterVisibility();
+    // IMPORTANT CORRECTNESS FIX:
+    // Marker filter mode is defined as: "show ONLY highlighted markers".
+    //
+    // Our addMarker() implementation enforces this by *skipping* non-highlighted markers when
+    // markerFilterModeEnabled is true (see the early return in addMarker()).
+    //
+    // That means if the app loads markers while filter mode is enabled (common when the toggle is
+    // restored from localStorage), most markers are never created/added to the map at all.
+    //
+    // The previous implementation tried to implement filter mode via a CSS display toggle on
+    // already-created marker DOM elements. That fails in the "markers were skipped" case
+    // (there are no DOM elements), and it is also not correct with clustering because hidden
+    // markers can still be counted/clustered.
+    //
+    // The correct approach is to *rebuild* the marker set from the authoritative allMarkerData store,
+    // re-applying the current filter/highlight/hidden-type rules.
+    //
+    // This ensures:
+    // - Turning filter mode OFF re-adds markers that were previously skipped.
+    // - Turning filter mode ON removes non-highlighted markers so clusters don't include them.
+    rebuildAllMarkers(mapInstance);
 
     console.log(`[MarkerManager] Marker filter mode ${enabled ? 'enabled' : 'disabled'}`);
     return true;
@@ -603,6 +646,42 @@ function updateMarkerFilterVisibility() {
  */
 export function isMarkerFilterModeEnabled() {
     return markerFilterModeEnabled;
+}
+
+/**
+ * Enable/disable the master markers visibility toggle (sidebar "Markers" layer switch)
+ * When disabled, markers are stored in allMarkerData but not rendered on the map.
+ * @param {boolean} enabled - Whether markers should be visible
+ * @param {object} mapInstance - Leaflet map instance
+ * @returns {boolean} - Always true
+ */
+export function setShowMarkersEnabled(enabled, mapInstance) {
+    if (!mapInstance) {
+        console.warn('[MarkerManager] Cannot toggle markers visibility - mapInstance is null');
+        return false;
+    }
+
+    if (showMarkersEnabled === enabled) {
+        return true; // No change needed
+    }
+
+    showMarkersEnabled = enabled;
+
+    // Rebuild markers to apply the new visibility state
+    // - When enabling: adds markers from allMarkerData to the map
+    // - When disabling: removes markers from the map (but keeps allMarkerData)
+    rebuildAllMarkers(mapInstance);
+
+    console.log(`[MarkerManager] Show markers ${enabled ? 'enabled' : 'disabled'}`);
+    return true;
+}
+
+/**
+ * Get whether markers layer is enabled
+ * @returns {boolean} - True if markers are enabled
+ */
+export function isShowMarkersEnabled() {
+    return showMarkersEnabled;
 }
 
 // Helper functions

@@ -110,6 +110,19 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     // Floating button toggle states - persisted to localStorage
     private const string ToggleStatesStorageKey = "mapToggleStates";
 
+    // Sidebar layer visibility state (Players/Markers/Custom Markers/etc.) - persisted to localStorage.
+    //
+    // Why:
+    // - The floating button toggles are persisted (marker filter mode, clustering, overlays, roads)
+    // - But the sidebar "Layer Visibility" switches were not persisted, so refreshes always reset to defaults
+    //   (notably: Markers hidden by default), which makes marker behavior look inconsistent on initial load.
+    private const string LayerVisibilityStorageKey = "mapLayerVisibility";
+
+    // Leaflet can fire 'load' very early. These flags let HandleMapInitialized defensively load localStorage
+    // state if OnAfterRenderAsync(firstRender) hasn't finished yet.
+    private bool toggleStatesLoaded = false;
+    private bool layerVisibilityLoaded = false;
+
     #endregion
 
     #region Sidebar State
@@ -378,6 +391,11 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
                 // Load floating button toggle states from localStorage
                 await LoadToggleStatesAsync();
+                toggleStatesLoaded = true;
+
+                // Load sidebar layer visibility switches from localStorage
+                await LoadLayerVisibilityAsync();
+                layerVisibilityLoaded = true;
 
                 // Load "my character" name from localStorage
                 await LoadMyCharacterAsync();
@@ -472,17 +490,25 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
             // No delay needed - this is called from HandleMapInitialized after Leaflet 'load' event
             // The map is guaranteed to be ready at this point (event-driven architecture)
 
-            // Load markers for current map (only if markers layer is enabled or marker filter mode is on)
-            if (LayerVisibility.ShowMarkers || showMarkerFilterMode)
-            {
-                var markersToLoad = MarkerState.GetMarkersForMap(MapNavigation.CurrentMapId).ToList();
+            // ALWAYS load markers into JavaScript's allMarkerData storage.
+            // JavaScript handles visibility via markerFilterModeEnabled, hiddenMarkerTypes, etc.
+            //
+            // Previous bug: We gated this with `if (ShowMarkers || showMarkerFilterMode)`.
+            // If both were false (e.g., user saved ShowMarkers=false in localStorage),
+            // markers were never sent to JS, so toggling filter mode ON later had nothing to filter.
+            //
+            // The correct design: C# always sends markers; JS decides what to display.
+            var markersToLoad = MarkerState.GetMarkersForMap(MapNavigation.CurrentMapId).ToList();
+            Logger.LogInformation("Loading {Count} markers for map {MapId} (ShowMarkers={ShowMarkers}, FilterMode={FilterMode})",
+                markersToLoad.Count, MapNavigation.CurrentMapId, LayerVisibility.ShowMarkers, showMarkerFilterMode);
 
-                // Enrich markers with timer data before adding to map
-                EnrichMarkersWithTimerData(markersToLoad);
+            // Enrich markers with timer data before adding to map
+            EnrichMarkersWithTimerData(markersToLoad);
 
-                // Batch add all markers in a single JS interop call for performance
-                await mapView.AddMarkersAsync(markersToLoad);
-            }
+            // Batch add all markers in a single JS interop call
+            // JS addMarker() will store in allMarkerData and decide visibility based on current settings
+            await mapView.AddMarkersAsync(markersToLoad);
+            Logger.LogInformation("AddMarkersAsync completed for {Count} markers", markersToLoad.Count);
 
             // Load custom markers
             await TryRenderPendingCustomMarkersAsync();
@@ -584,11 +610,11 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
                 EnrichMarkersWithTimerData(result.AddedMarkers);
                 EnrichMarkersWithTimerData(result.UpdatedMarkers);
 
-                // Update map view
+                // Update map view - always send markers to JS (it handles visibility)
                 if (mapView != null)
                 {
-                    // Batch add new markers for performance (only if markers layer is enabled)
-                    if (result.AddedMarkers.Count > 0 && (LayerVisibility.ShowMarkers || showMarkerFilterMode))
+                    // Always add new markers - JS stores in allMarkerData and decides visibility
+                    if (result.AddedMarkers.Count > 0)
                     {
                         await mapView.AddMarkersAsync(result.AddedMarkers);
                     }
@@ -746,6 +772,30 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     {
         Logger.LogInformation("Map initialized event received, starting initialization sequence");
 
+        // Leaflet can fire its 'load' event extremely early (often before OnAfterRenderAsync(firstRender)
+        // finishes reading localStorage). If we start loading markers with default toggle values, the initial
+        // marker/clustering/filter behavior will look "random" after a page refresh.
+        //
+        // Defense-in-depth: if localStorage-backed state wasn't loaded yet, load it now.
+        if (!toggleStatesLoaded)
+        {
+            await LoadToggleStatesAsync();
+            toggleStatesLoaded = true;
+        }
+
+        if (!layerVisibilityLoaded)
+        {
+            await LoadLayerVisibilityAsync();
+            layerVisibilityLoaded = true;
+        }
+
+        // Keep clustering state aligned across:
+        // - the floating clustering toggle (showClustering)
+        // - the LayerVisibility service (snapshot/persistence)
+        // - the MapState used for UI binding
+        LayerVisibility.ShowClustering = showClustering;
+        state.ShowClustering = showClustering;
+
         // Set initial revisions for all maps
         foreach (var map in MapNavigation.Maps)
         {
@@ -777,6 +827,10 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
             // (even if empty, to ensure JS state matches C# state)
             await mapView.SetHiddenMarkerTypesAsync(hiddenMarkerGroups);
 
+            // Apply JS toggles that affect marker creation (filter mode, clustering) BEFORE adding markers.
+            // This avoids creating thousands of markers and then immediately rebuilding/moving them.
+            await ApplyToggleStatesToJavaScriptAsync();
+
             Logger.LogInformation("Loading markers for map {MapId}", MapNavigation.CurrentMapId);
             await LoadMarkersForCurrentMapAsync();
 
@@ -789,9 +843,6 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         // 2. Leaflet 'load' event has fired, so all JS interop is ready
         // 3. circuitFullyReady should already be true from OnAfterRenderAsync
         await InitializeBrowserSseAsync();
-
-        // Apply loaded toggle states to JavaScript now that map is fully ready
-        await ApplyToggleStatesToJavaScriptAsync();
     }
 
     private Task HandleMapChanged(int mapId)
@@ -942,6 +993,8 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         {
             await mapView.ToggleGridCoordinatesAsync(LayerVisibility.ShowGridCoordinates);
         }
+
+        await SaveLayerVisibilityAsync();
     }
 
     private async Task HandleZoomOut()
@@ -1115,6 +1168,8 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         {
             await mapView.ToggleGridCoordinatesAsync(value);
         }
+
+        await SaveLayerVisibilityAsync();
     }
 
     #endregion
@@ -1223,7 +1278,12 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         state.ShowQuestTooltips = LayerVisibility.ShowQuestTooltips;
         state.ShowClustering = LayerVisibility.ShowClustering;
 
+        // Sync markers visibility to JS (triggers rebuildAllMarkers for efficient batch update)
+        leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
+        await leafletModule.InvokeAsync<bool>("setShowMarkersEnabled", LayerVisibility.ShowMarkers);
+
         await SyncLayerVisibility();
+        await SaveLayerVisibilityAsync();
         StateHasChanged();  // Force UI re-render
     }
 
@@ -1239,6 +1299,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         }
 
         await SaveToggleStatesAsync();
+        await SaveLayerVisibilityAsync();
         await InvokeAsync(StateHasChanged);
     }
 
@@ -1359,6 +1420,83 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
     }
 
     /// <summary>
+    /// Load persisted sidebar layer visibility (ShowMarkers, ShowPlayers, etc.) from localStorage.
+    /// </summary>
+    private async Task LoadLayerVisibilityAsync()
+    {
+        try
+        {
+            var json = await SafeJs.GetLocalStorageAsync(LayerVisibilityStorageKey);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                // No saved state - keep service defaults, but ensure the UI state object matches the service.
+                SyncLayerVisibilityStateToUi();
+                return;
+            }
+
+            var config = JsonSerializer.Deserialize<LayerVisibilityConfig>(json, CamelCaseJsonOptions);
+            if (config == null)
+            {
+                SyncLayerVisibilityStateToUi();
+                return;
+            }
+
+            LayerVisibility.SetVisibilityConfig(config);
+            SyncLayerVisibilityStateToUi();
+
+            Logger.LogDebug("Loaded layer visibility from localStorage");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load layer visibility from localStorage");
+            // Keep defaults if localStorage read/parse fails.
+            SyncLayerVisibilityStateToUi();
+        }
+    }
+
+    /// <summary>
+    /// Persist sidebar layer visibility (ShowMarkers, ShowPlayers, etc.) to localStorage.
+    /// </summary>
+    private async Task SaveLayerVisibilityAsync()
+    {
+        try
+        {
+            var config = LayerVisibility.GetVisibilityConfig();
+
+            // Clustering is controlled primarily by the floating clustering toggle (showClustering).
+            // Keep the persisted snapshot aligned with that value.
+            config.ShowClustering = showClustering;
+
+            var json = JsonSerializer.Serialize(config, CamelCaseJsonOptions);
+            await SafeJs.SetLocalStorageAsync(LayerVisibilityStorageKey, json);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to save layer visibility to localStorage");
+        }
+    }
+
+    /// <summary>
+    /// Sync LayerVisibilityService values into MapState fields used for UI binding.
+    /// Prevents confusing "toggle looks ON but behavior is OFF" mismatches after reload.
+    /// </summary>
+    private void SyncLayerVisibilityStateToUi()
+    {
+        state.ShowPlayers = LayerVisibility.ShowPlayers;
+        state.ShowPlayerTooltips = LayerVisibility.ShowPlayerTooltips;
+        state.ShowMarkers = LayerVisibility.ShowMarkers;
+        state.ShowCustomMarkers = LayerVisibility.ShowCustomMarkers;
+        state.ShowThingwalls = LayerVisibility.ShowThingwalls;
+        state.ShowThingwallTooltips = LayerVisibility.ShowThingwallTooltips;
+        state.ShowQuests = LayerVisibility.ShowQuests;
+        state.ShowQuestTooltips = LayerVisibility.ShowQuestTooltips;
+        state.ShowGridCoordinates = LayerVisibility.ShowGridCoordinates;
+
+        // Reflect clustering state for any UI bindings, but keep the source of truth as the floating toggle.
+        state.ShowClustering = showClustering;
+    }
+
+    /// <summary>
     /// Applies loaded toggle states to JavaScript after map is initialized.
     /// Must be called after the map is ready for JS interop.
     /// </summary>
@@ -1368,59 +1506,43 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
         {
             leafletModule ??= await JS.InvokeAsync<IJSObjectReference>("import", $"./js/leaflet-interop.js{JsVersion}");
 
-            // Apply PClaim toggle (default is false, so only apply if true)
-            if (showPClaim)
+            // IMPORTANT:
+            // We explicitly set TRUE *and* FALSE values here to avoid stale JS module state across navigations.
+            //
+            // Blazor Server often keeps JS modules alive between page navigations. Marker-manager state (notably
+            // marker filter mode + highlight toggles) is module-scoped and would otherwise "stick" and cause:
+            // - Filter mode toggle OFF in the UI, but JS still filtering markers (no markers on initial load)
+            // - Highlights appearing/disappearing inconsistently on first load
+
+            // Overlay toggles
+            await leafletModule.InvokeAsync<bool>("setOverlayTypeEnabled", "ClaimFloor", showPClaim);
+            await leafletModule.InvokeAsync<bool>("setOverlayTypeEnabled", "ClaimOutline", showPClaim);
+
+            await leafletModule.InvokeAsync<bool>("setOverlayTypeEnabled", "VillageFloor", showVClaim);
+            await leafletModule.InvokeAsync<bool>("setOverlayTypeEnabled", "VillageOutline", showVClaim);
+
+            await leafletModule.InvokeAsync<bool>("setOverlayTypeEnabled", "Province0", showProvince);
+            await leafletModule.InvokeAsync<bool>("setOverlayTypeEnabled", "Province1", showProvince);
+            await leafletModule.InvokeAsync<bool>("setOverlayTypeEnabled", "Province2", showProvince);
+            await leafletModule.InvokeAsync<bool>("setOverlayTypeEnabled", "Province3", showProvince);
+            await leafletModule.InvokeAsync<bool>("setOverlayTypeEnabled", "Province4", showProvince);
+
+            // Marker visibility and filter mode toggles
+            // IMPORTANT: setShowMarkersEnabled must be called BEFORE markers are loaded.
+            // This controls whether addMarker() actually adds markers to the map or just stores them.
+            await leafletModule.InvokeAsync<bool>("setShowMarkersEnabled", LayerVisibility.ShowMarkers);
+            await leafletModule.InvokeAsync<bool>("setThingwallHighlightEnabled", showThingwallHighlight);
+            await leafletModule.InvokeAsync<bool>("setQuestGiverHighlightEnabled", showQuestGiverHighlight);
+            await leafletModule.InvokeAsync<bool>("setMarkerFilterModeEnabled", showMarkerFilterMode);
+
+            // Clustering toggle
+            if (mapView != null)
             {
-                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "ClaimFloor", true);
-                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "ClaimOutline", true);
+                await mapView.SetClusteringEnabled(showClustering);
             }
 
-            // Apply VClaim toggle (default is false, so only apply if true)
-            if (showVClaim)
-            {
-                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "VillageFloor", true);
-                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "VillageOutline", true);
-            }
-
-            // Apply Province toggle (default is false, so only apply if true)
-            if (showProvince)
-            {
-                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province0", true);
-                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province1", true);
-                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province2", true);
-                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province3", true);
-                await leafletModule.InvokeVoidAsync("setOverlayTypeEnabled", "Province4", true);
-            }
-
-            // Apply Thingwall highlight toggle (default is false, so only apply if true)
-            if (showThingwallHighlight)
-            {
-                await leafletModule.InvokeVoidAsync("setThingwallHighlightEnabled", true);
-            }
-
-            // Apply Quest giver highlight toggle (default is false, so only apply if true)
-            if (showQuestGiverHighlight)
-            {
-                await leafletModule.InvokeVoidAsync("setQuestGiverHighlightEnabled", true);
-            }
-
-            // Apply Marker filter mode toggle (default is false, so only apply if true)
-            if (showMarkerFilterMode)
-            {
-                await leafletModule.InvokeVoidAsync("setMarkerFilterModeEnabled", true);
-            }
-
-            // Apply Clustering toggle (default is true, so only apply if false)
-            if (!showClustering && mapView != null)
-            {
-                await mapView.SetClusteringEnabled(false);
-            }
-
-            // Apply Roads toggle (default is true, so only apply if false)
-            if (!showRoads)
-            {
-                await leafletModule.InvokeVoidAsync("toggleRoads", false);
-            }
+            // Roads toggle
+            await leafletModule.InvokeAsync<bool>("toggleRoads", showRoads);
 
             Logger.LogDebug("Applied toggle states to JavaScript: PClaim={PClaim}, VClaim={VClaim}, Province={Province}, Thingwall={Thingwall}, Quest={Quest}, Filter={Filter}, Clustering={Clustering}, Roads={Roads}",
                 showPClaim, showVClaim, showProvince, showThingwallHighlight, showQuestGiverHighlight, showMarkerFilterMode, showClustering, showRoads);
@@ -2080,15 +2202,13 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
 
         await mapView.ClearAllMarkersAsync();
 
-        // Only add markers if they should be visible
-        if (LayerVisibility.ShowMarkers || showMarkerFilterMode)
-        {
-            var markers = MarkerState.GetMarkersForMap(MapNavigation.CurrentMapId).ToList();
-            EnrichMarkersWithTimerData(markers);
+        // Always load markers - JS handles visibility based on filter mode, highlight settings, etc.
+        // This ensures allMarkerData is populated for later toggles.
+        var markers = MarkerState.GetMarkersForMap(MapNavigation.CurrentMapId).ToList();
+        EnrichMarkersWithTimerData(markers);
 
-            // Batch add all markers in a single JS interop call for performance
-            await mapView.AddMarkersAsync(markers);
-        }
+        // Batch add all markers in a single JS interop call for performance
+        await mapView.AddMarkersAsync(markers);
     }
 
     /// <summary>
@@ -2604,6 +2724,7 @@ public partial class Map : IAsyncDisposable, IBrowserViewportObserver
             await leafletModule.InvokeVoidAsync("toggleCustomMarkers", show);
         }
 
+        await SaveLayerVisibilityAsync();
         await InvokeAsync(StateHasChanged);
     }
 
